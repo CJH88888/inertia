@@ -1,18 +1,22 @@
 <?php
 
+use App\Http\Requests\BigIntegerFormRequest;
 use App\Http\Requests\PrecognitionFormRequest;
 use App\Models\ChatMessage;
+use App\Models\Todo;
 use Illuminate\Foundation\Http\Middleware\HandlePrecognitiveRequests;
 use Illuminate\Http\Request;
 use Illuminate\Pagination\LengthAwarePaginator;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Route;
-use App\Models\Todo;
 use Inertia\Inertia;
-use Prism\Prism\Enums\Provider;
-use Prism\Prism\Prism;
-use Prism\Prism\ValueObjects\Messages\AssistantMessage;
-use Prism\Prism\ValueObjects\Messages\UserMessage;
+use Laravel\Ai\Enums\Lab;
+use Laravel\Ai\Messages\Message;
+use Laravel\Ai\Messages\MessageRole;
+use Laravel\Ai\Streaming\Events\TextDelta;
+
+use function Laravel\Ai\agent;
 
 /*
 |--------------------------------------------------------------------------
@@ -195,7 +199,7 @@ Route::get('/login', function () {
 
 Route::get('/async', function () {
     return inertia('Async', [
-        'sleep' => Inertia::lazy(function () {
+        'sleep' => Inertia::optional(function () {
             sleep(4);
         }),
         'jonathan' => Cache::get('jonathan', false),
@@ -215,10 +219,12 @@ Route::post('/messages', function (Request $request) {
         'content' => $data['message'],
     ]);
 
+    /** @var Collection<int, Message> $messages */
     $messages = ChatMessage::latest('id')
         ->limit(10)
         ->get()
         ->reverse()
+        ->values()
         ->map(function (ChatMessage $message) use ($prompt) {
             $content = $message->content;
 
@@ -227,35 +233,30 @@ Route::post('/messages', function (Request $request) {
                 $content = "Answer in max. 10 sentences, may be shorter. Code examples allowed when needed. Don't hallucinate, just answer based on the provided context.\n\n".$content;
             }
 
-            return $message->type === 'prompt'
-                ? new UserMessage($content)
-                : new AssistantMessage($content);
-        })
-        ->all();
+            return new Message(
+                $message->type === 'prompt' ? MessageRole::User : MessageRole::Assistant,
+                $content,
+            );
+        });
 
-    // Create a streaming response from the LLM
-    $stream = Prism::text()
-        ->using(Provider::Ollama, 'gemma3:4b')
-        ->withMessages($messages)
-        ->asStream();
+    $stream = agent(messages: $messages->slice(0, -1))
+        ->stream($messages->last()->content, provider: Lab::Ollama, model: 'gemma3:4b')
+        ->then(function ($response) {
+            if (! blank($response->text)) {
+                ChatMessage::create([
+                    'type' => 'response',
+                    'content' => $response->text,
+                ]);
+            }
+        });
 
     return response()->stream(function () use ($stream) {
-        $response = '';
-
-        foreach ($stream as $chunk) {
-            $response .= $chunk->text;
-            echo $chunk->text;
-            ob_flush();
-            flush();
+        foreach ($stream as $event) {
+            if ($event instanceof TextDelta) {
+                yield $event->delta;
+            }
         }
-
-        if (! blank($response)) {
-            ChatMessage::create([
-                'type' => 'response',
-                'content' => $response,
-            ]);
-        }
-    }, 200, ['X-Accel-Buffering' => 'no']);
+    });
 });
 
 Route::get('/chat', function () {
@@ -374,6 +375,18 @@ Route::get('/defer', function () {
     info('defer route');
 
     return inertia('Defer', [
+        'stats' => Inertia::defer(function () {
+            sleep(1);
+
+            if (! request()->hasHeader('X-Rescue-Prop-Success')) {
+                throw new RuntimeException('Failed to load stats.');
+            }
+
+            return [
+                'visitors' => 1287,
+                'revenue' => 4920,
+            ];
+        }, rescue: true),
         'users' => Inertia::defer(function () {
             sleep(1);
 
@@ -496,7 +509,7 @@ Route::get('/defer', function () {
 });
 
 Route::get('/goodbye', function () {
-    return Inertia::location('https://inertiajs.com/redirects');
+    return Inertia::location('https://inertiajs.com/docs/v3/the-basics/redirects');
 });
 
 Route::get('/poll', function () {
@@ -542,7 +555,6 @@ Route::post('/logout', function () {
     return redirect('/login');
 });
 
-
 Route::get('/flash', function () {
     return inertia('Flash');
 });
@@ -567,7 +579,7 @@ Route::get('/once/{page}', function (int $page) {
     return inertia($component, [
         'foo' => Inertia::once(fn () => 'foo value: '.now()->getTimestampMs())->fresh($page === 3),
         'bar' => Inertia::once(fn () => 'bar value: '.now()->getTimestampMs())->until(10),
-        'baz' . $page => Inertia::once(fn () => 'baz value: '.now()->getTimestampMs())->as('baz'),
+        'baz'.$page => Inertia::once(fn () => 'baz value: '.now()->getTimestampMs())->as('baz'),
         'qux' => Inertia::defer(fn () => 'qux value: '.now()->getTimestampMs())->once(),
     ]);
 });
@@ -612,3 +624,46 @@ Route::get('/ssr-debug/document', fn () => inertia('SsrDebug/DocumentError'));
 Route::get('/ssr-debug/localstorage', fn () => inertia('SsrDebug/LocalStorageError'));
 Route::get('/ssr-debug/render', fn () => inertia('SsrDebug/RenderError'));
 Route::get('/ssr-debug/non-existent', fn () => inertia('SsrDebug/NonExistentComponent'));
+
+Route::get('/big-integers', function () {
+    return inertia('BigIntegers', [
+        'safe' => 42,
+        'big' => 900719925474099988,
+        'negative' => -900719925474099988,
+        'maximum' => PHP_INT_MAX,
+        'boundary' => 9007199254740991,
+        'order' => [
+            'id' => 1234567890123456789,
+            'lines' => [
+                ['sku' => 'A-1', 'reference' => 900719925474099988],
+                ['sku' => 'B-2', 'reference' => 900719925474099989],
+            ],
+        ],
+        'wrapped' => (object) ['id' => 900719925474099988],
+    ]);
+});
+
+$bigIntegerDebug = fn (mixed $value): array => [
+    'received' => $value,
+    'type' => get_debug_type($value),
+];
+
+Route::post('/big-integers/echo', function (Request $request) use ($bigIntegerDebug) {
+    return Inertia::flash($bigIntegerDebug($request->input('id')))->back();
+});
+
+Route::post('/big-integers/validate', function (BigIntegerFormRequest $request) use ($bigIntegerDebug) {
+    return Inertia::flash($bigIntegerDebug($request->input('account_id')))->back();
+})->middleware([HandlePrecognitiveRequests::class]);
+
+Route::post('/big-integers/upload', function (Request $request) use ($bigIntegerDebug) {
+    $request->validate([
+        'account_id' => ['required', 'integer', 'min:1'],
+        'avatar' => ['required', 'file'],
+    ]);
+
+    return Inertia::flash([
+        ...$bigIntegerDebug($request->input('account_id')),
+        'avatar' => $request->file('avatar')->getClientOriginalName(),
+    ])->back();
+});

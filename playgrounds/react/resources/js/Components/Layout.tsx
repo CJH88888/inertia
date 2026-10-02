@@ -1,12 +1,11 @@
-import { Link, useLayoutProps, usePage } from '@inertiajs/react'
+import { Link, usePage } from '@inertiajs/react'
 
-export default function Layout({ children }: { children: React.ReactNode }) {
+export default function Layout({ children, padding = true }: { children: React.ReactNode; padding?: boolean }) {
   const { appName } = usePage().props
-  const { padding } = useLayoutProps({ padding: true })
 
   return (
     <>
-      <nav className="flex items-center space-x-6 bg-slate-800 px-10 py-6 text-white">
+      <nav className="flex items-center space-x-6 overflow-scroll bg-slate-800 px-10 py-6 text-white">
         <div className="rounded-lg bg-slate-700 px-4 py-1">{appName}</div>
         <Link href="/" className="hover:underline" prefetch>
           Home
@@ -55,6 +54,9 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         </Link>
         <Link href="/flash" className="hover:underline">
           Flash
+        </Link>
+        <Link href="/big-integers" className="hover:underline">
+          Big Integers
         </Link>
         <Link href="/error/404" className="hover:underline">
           Errors

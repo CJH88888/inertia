@@ -1,5 +1,6 @@
 import { NamedInputEvent, ValidationConfig, Validator } from 'laravel-precognition'
 import type { HttpCancelledError, HttpNetworkError, HttpResponseError } from './httpErrors'
+import { InfiniteScrollOnCompleteDetails, InfiniteScrollPageIdentifier } from './infiniteScroll/data'
 import { Response } from './response'
 
 export type HttpRequestHeaders = Record<string, unknown>
@@ -27,6 +28,10 @@ export interface HttpResponse {
   status: number
   data: string
   headers: HttpResponseHeaders
+}
+
+export interface HttpExceptionResponse extends Omit<HttpResponse, 'data'> {
+  data: string | Record<string, unknown>
 }
 
 export interface HttpClient {
@@ -101,7 +106,7 @@ export type NamedLayoutProps = InertiaConfigFor<'namedLayoutProps'>
 export type Errors = Record<string, ErrorValue>
 export type ErrorBag = Record<string, Errors>
 
-export type FormDataConvertibleValue = Blob | FormDataEntryValue | Date | boolean | number | null | undefined
+export type FormDataConvertibleValue = Blob | FormDataEntryValue | Date | boolean | number | bigint | null | undefined
 export type FormDataConvertible =
   | Array<FormDataConvertible>
   | { [key: string]: FormDataConvertible }
@@ -212,9 +217,9 @@ export interface PageProps {
 
 export type ScrollProp = {
   pageName: string
-  previousPage: number | string | null
-  nextPage: number | string | null
-  currentPage: number | string | null
+  previousPage: InfiniteScrollPageIdentifier
+  nextPage: InfiniteScrollPageIdentifier
+  currentPage: InfiniteScrollPageIdentifier
   reset: boolean
 }
 
@@ -230,8 +235,10 @@ export interface Page<SharedProps extends PageProps = PageProps> {
   clearHistory?: boolean
   preserveFragment?: boolean
   encryptHistory?: boolean
+  preserveBigIntegers?: boolean
   deferredProps?: Record<string, NonNullable<VisitOptions['only']>>
   initialDeferredProps?: Record<string, NonNullable<VisitOptions['only']>>
+  rescuedProps: string[]
   mergeProps?: string[]
   prependProps?: string[]
   deepMergeProps?: string[]
@@ -281,10 +288,12 @@ export type PageHandler<ComponentType = Component> = ({
   component,
   page,
   preserveState,
+  initialRender,
 }: {
   component: ComponentType
   page: Page
   preserveState: boolean
+  initialRender: boolean
 }) => Promise<unknown>
 
 export type PreserveStateOption = boolean | 'errors' | ((page: Page) => boolean)
@@ -332,6 +341,7 @@ export type Visit<T extends RequestPayload = RequestPayload> = {
     | Record<string, unknown>
     | ((currentProps: PageProps, sharedProps: Partial<PageProps>) => Record<string, unknown>)
     | null
+  cached: boolean
 }
 
 export type GlobalEventsMap<T extends RequestPayload = RequestPayload> = {
@@ -376,30 +386,44 @@ export type GlobalEventsMap<T extends RequestPayload = RequestPayload> = {
     result: void
   }
   navigate: {
-    parameters: [Page<SharedPageProps>]
+    parameters: [Page<SharedPageProps>, { cached?: boolean; visitId?: string }?]
     details: {
       page: Page<SharedPageProps>
+      cached?: boolean
+      visitId?: string
+    }
+    result: void
+  }
+  clientVisit: {
+    parameters: [Page<SharedPageProps>, { replace: boolean; visitId: string }]
+    details: {
+      page: Page<SharedPageProps>
+      replace: boolean
+      visitId: string
     }
     result: void
   }
   success: {
-    parameters: [Page<SharedPageProps>]
+    parameters: [Page<SharedPageProps>, { visitId?: string }?]
     details: {
       page: Page<SharedPageProps>
+      visitId?: string
     }
     result: void
   }
   error: {
-    parameters: [Errors]
+    parameters: [Errors, { page?: Page<SharedPageProps>; visitId?: string }?]
     details: {
       errors: Errors
+      page?: Page<SharedPageProps>
+      visitId?: string
     }
     result: void
   }
   httpException: {
-    parameters: [HttpResponse]
+    parameters: [HttpExceptionResponse]
     details: {
-      response: HttpResponse
+      response: HttpExceptionResponse
     }
     result: boolean | void
   }
@@ -432,6 +456,14 @@ export type GlobalEventsMap<T extends RequestPayload = RequestPayload> = {
       flash: Page['flash']
     }
     result: void
+  }
+  location: {
+    parameters: [URL, boolean]
+    details: {
+      url: URL
+      versionChange: boolean
+    }
+    result: boolean | void
   }
 }
 
@@ -496,6 +528,7 @@ export type ReloadOptions<T extends RequestPayload = RequestPayload> = Omit<
 export type PollOptions = {
   keepAlive?: boolean
   autoStart?: boolean
+  mode?: 'overlap' | 'cancel' | 'rest'
 }
 
 export type VisitHelperOptions<T extends RequestPayload = RequestPayload> = Omit<VisitOptions<T>, 'method' | 'data'>
@@ -508,6 +541,8 @@ export type RouterInitParams<ComponentType = Component> = {
 }
 
 export type PendingVisitOptions = {
+  /** @internal */
+  id: string
   url: URL
   completed: boolean
   cancelled: boolean
@@ -523,9 +558,11 @@ export type InternalActiveVisit = ActiveVisit & {
   onPrefetchResponse?: (response: Response) => void
   onPrefetchError?: (error: Error) => void
   deferredProps?: boolean
+  poll?: boolean
+  cached?: boolean
 }
 
-export type VisitId = unknown
+export type VisitId = string
 export type Component = unknown
 
 type FirstLevelOptional<T> = {
@@ -555,9 +592,13 @@ interface BaseCreateInertiaAppOptions<TComponentResolver, TSetupOptions, TSetupR
   layout?: (name: string, page: Page) => unknown
   setup: (options: TSetupOptions) => TSetupReturn
   title?: HeadManagerTitleCallback
+  serverHead?: ServerHeadOption
+  nonce?: string
   defaults?: FirstLevelOptional<InertiaAppConfig & TAdditionalInertiaAppConfig>
   /** HTTP client or options to use for requests. Defaults to XhrHttpClient. */
   http?: HttpClient | HttpClientOptions
+  /** Enable development-only integrations. Defaults to `import.meta.env.DEV`. */
+  dev?: boolean
 }
 
 export interface CreateInertiaAppOptionsForCSR<
@@ -589,7 +630,10 @@ export interface CreateInertiaAppOptionsForSSR<
 export type InertiaAppSSRResponse = { head: string[]; body: string }
 export type InertiaAppResponse = Promise<InertiaAppSSRResponse | void>
 
-export type HeadManagerTitleCallback = (title: string) => string
+export type HeadManagerTitleCallback = (title: string, page: Page) => string
+export type ServerHead = string[]
+export type ServerHeadResolver = (page: Page) => ServerHead | null | undefined
+export type ServerHeadOption = boolean | string | ServerHeadResolver
 
 export interface CreateInertiaAppOptions<TComponentResolver, TSetupOptions, TSetupReturn, TAdditionalInertiaAppConfig> {
   id?: string
@@ -598,14 +642,19 @@ export interface CreateInertiaAppOptions<TComponentResolver, TSetupOptions, TSet
   layout?: (name: string, page: Page) => unknown
   setup?: (options: TSetupOptions) => TSetupReturn
   title?: HeadManagerTitleCallback
+  serverHead?: ServerHeadOption
   progress?: ProgressOptions | false
+  nonce?: string
   defaults?: FirstLevelOptional<InertiaAppConfig & TAdditionalInertiaAppConfig>
   /** HTTP client or options to use for requests. Defaults to XhrHttpClient. */
   http?: HttpClient | HttpClientOptions
+  /** Enable development-only integrations. Defaults to `import.meta.env.DEV`. */
+  dev?: boolean
 }
 export type HeadManagerOnUpdateCallback = (elements: string[]) => void
 export type HeadManager = {
   forceUpdate: () => void
+  updateServerHead: (elements?: string[]) => void
   createProvider: () => {
     reconnect: () => void
     update: HeadManagerOnUpdateCallback
@@ -633,6 +682,7 @@ export type InertiaAppConfig = {
     cacheFor: CacheForOption | CacheForOption[]
     hoverDelay: number
   }
+  nonce?: string
   visitOptions?: (href: string, options: VisitOptions) => VisitOptions
 }
 
@@ -740,7 +790,15 @@ export type UseHttpSubmitArguments<TResponse = unknown, TForm = unknown> =
 
 export type FormComponentOptions = Pick<
   VisitOptions,
-  'preserveScroll' | 'preserveState' | 'preserveUrl' | 'replace' | 'only' | 'except' | 'reset' | 'viewTransition'
+  | 'preserveScroll'
+  | 'preserveState'
+  | 'preserveUrl'
+  | 'replace'
+  | 'only'
+  | 'except'
+  | 'reset'
+  | 'viewTransition'
+  | 'async'
 >
 
 export type FormComponentOptimisticCallback<
@@ -759,10 +817,11 @@ export type FormComponentProps<TForm = Record<string, FormDataConvertible>> = Pa
   transform?: (data: TForm) => Record<string, FormDataConvertible>
   optimistic?: FormComponentOptimisticCallback<Page<SharedPageProps>['props'], TForm>
   options?: FormComponentOptions
-  onSubmitComplete?: (props: FormComponentOnSubmitCompleteArguments) => void
+  onSubmitComplete?: (props: FormComponentOnSubmitCompleteArguments<TForm & object>) => void
   disableWhileProcessing?: boolean
-  resetOnSuccess?: boolean | string[]
-  resetOnError?: boolean | string[]
+  cancelOnUnmount?: boolean
+  resetOnSuccess?: boolean | NoInfer<FormDataKeys<TForm>>[]
+  resetOnError?: boolean | NoInfer<FormDataKeys<TForm>>[]
   setDefaultsOnSuccess?: boolean
   validateFiles?: boolean
   validationTimeout?: number
@@ -778,6 +837,7 @@ export type FormComponentMethods<TForm extends object = Record<string, any>> = {
   }
   reset: <K extends FormDataKeys<TForm>>(...fields: K[]) => void
   submit: () => void
+  cancel: () => void
   defaults: () => void
   getData: () => TForm
   getFormData: () => FormData
@@ -832,13 +892,13 @@ export interface UseInfiniteScrollOptions {
   // Callbacks
   onBeforePreviousRequest: () => void
   onBeforeNextRequest: () => void
-  onCompletePreviousRequest: () => void
-  onCompleteNextRequest: () => void
+  onCompletePreviousRequest: (details: InfiniteScrollOnCompleteDetails) => void
+  onCompleteNextRequest: (details: InfiniteScrollOnCompleteDetails) => void
   onDataReset?: () => void
 }
 
 export interface UseInfiniteScrollDataManager {
-  getLastLoadedPage: () => number | string | null
+  getLastLoadedPage: () => InfiniteScrollPageIdentifier
   getPageName: () => string
   getRequestCount: () => number
   hasPrevious: () => boolean
@@ -855,7 +915,7 @@ export interface UseInfiniteScrollElementManager {
   refreshTriggers: () => void
   flushAll: () => void
   processManuallyAddedElements: () => void
-  processServerLoadedElements: (loadedPage: string | number | null) => void
+  processServerLoadedElements: (loadedPage: InfiniteScrollPageIdentifier) => void
 }
 
 export interface UseInfiniteScrollProps {
@@ -906,8 +966,10 @@ export type UseHttpOptions<TResponse = unknown> = {
   onBefore?: () => boolean | void
   onStart?: () => void
   onProgress?: (progress: HttpProgressEvent) => void
-  onSuccess?: (response: TResponse) => void
+  onSuccess?: (response: TResponse, httpResponse: HttpResponse) => void
   onError?: (errors: Errors) => void
+  onHttpException?: (response: HttpResponse) => boolean | void
+  onNetworkError?: (error: Error) => boolean | void
   onFinish?: () => void
   onCancel?: () => void
   onCancelToken?: (cancelToken: CancelToken) => void
@@ -930,6 +992,8 @@ declare global {
     'inertia:finish': GlobalEvent<'finish'>
     'inertia:beforeUpdate': GlobalEvent<'beforeUpdate'>
     'inertia:navigate': GlobalEvent<'navigate'>
+    'inertia:clientVisit': GlobalEvent<'clientVisit'>
     'inertia:flash': GlobalEvent<'flash'>
+    'inertia:location': GlobalEvent<'location'>
   }
 }

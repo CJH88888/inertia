@@ -30,6 +30,7 @@ const assertVisitObject = async (visit) => {
   await expect(visit.data).toBeDefined()
   await expect(visit.headers).toBeDefined()
   await expect(visit.preserveState).toBeDefined()
+  await expect(typeof visit.id).toBe('string')
 }
 
 const assertPageObject = async (page) => {
@@ -115,6 +116,56 @@ test.describe('Events', () => {
     await page.goto('/events')
   })
 
+  test.describe('visitId', () => {
+    test('it uses one id across the server visit lifecycle', async ({ page }) => {
+      await listenForGlobalMessages(page, 'inertia:before')
+      await listenForGlobalMessages(page, 'inertia:start')
+      await listenForGlobalMessages(page, 'inertia:success')
+      await listenForGlobalMessages(page, 'inertia:navigate')
+      await listenForGlobalMessages(page, 'inertia:finish')
+
+      await page.getByRole('link', { exact: true, name: 'Navigate Event' }).click()
+
+      const beforeMessages = await waitForGlobalMessages(page, 'inertia:before', 1)
+      const startMessages = await waitForGlobalMessages(page, 'inertia:start', 1)
+      const successMessages = await waitForGlobalMessages(page, 'inertia:success', 1)
+      const navigateMessages = await waitForGlobalMessages(page, 'inertia:navigate', 1)
+      const finishMessages = await waitForGlobalMessages(page, 'inertia:finish', 1)
+      const visitId = beforeMessages[0].detail.visit.id
+
+      await expect(startMessages[0].detail.visit.id).toBe(visitId)
+      await expect(finishMessages[0].detail.visit.id).toBe(visitId)
+      await expect(successMessages[0].detail.visitId).toBe(visitId)
+      await expect(navigateMessages[0].detail.visitId).toBe(visitId)
+    })
+
+    test('it assigns distinct ids to distinct server visits', async ({ page }) => {
+      await listenForGlobalMessages(page, 'inertia:before')
+
+      await page.locator('.navigate').dispatchEvent('click')
+      await waitForGlobalMessages(page, 'inertia:before', 1)
+      await page.goBack()
+      await page.locator('.navigate').dispatchEvent('click')
+
+      const beforeMessages = await waitForGlobalMessages(page, 'inertia:before', 2)
+
+      await expect(beforeMessages[1].detail.visit.id).not.toBe(beforeMessages[0].detail.visit.id)
+    })
+
+    test('it leaves navigate events without a visit id for popstate navigations', async ({ page }) => {
+      await listenForGlobalMessages(page, 'inertia:navigate')
+
+      await page.getByRole('link', { exact: true, name: 'Navigate Event' }).click()
+      await waitForGlobalMessages(page, 'inertia:navigate', 1)
+      await page.goBack()
+
+      const navigateMessages = await waitForGlobalMessages(page, 'inertia:navigate', 2)
+
+      await expect(typeof navigateMessages[0].detail.visitId).toBe('string')
+      await expect(navigateMessages[1].detail.visitId).toBeUndefined()
+    })
+  })
+
   test.describe('Listeners', () => {
     test('does not have any listeners by default', async ({ page }) => {
       await page.getByRole('link', { name: 'Basic Visit' }).click()
@@ -130,6 +181,27 @@ test.describe('Events', () => {
         await expect(messages[0]).toBe('Removing Inertia.on Listener')
         await expect(messages[1]).toBe('onBefore')
         await expect(messages[2]).toBe('onStart')
+      })
+    })
+
+    test.describe('Inertia.once', () => {
+      test('fires the global listener once and then deregisters it', async ({ page }) => {
+        await page.getByRole('link', { name: 'Register Inertia Once Listener' }).click()
+
+        const messages = await waitForMessages(page, 3)
+
+        await expect(messages[0]).toBe('onBefore-1')
+        await expect(messages[1]).toBe('Inertia.once(before)')
+        await expect(messages[2]).toBe('onBefore-2')
+      })
+
+      test('returns a callback that can be used to remove the global listener before it fires', async ({ page }) => {
+        await page.getByRole('link', { name: 'Remove Inertia Once Listener' }).click()
+
+        const messages = await waitForMessages(page, 2)
+
+        await expect(messages[0]).toBe('Removing Inertia.once Listener')
+        await expect(messages[1]).toBe('onBefore')
       })
     })
   })
@@ -363,6 +435,18 @@ test.describe('Events', () => {
         await expect(messages[1]).toEqual({ foo: 'bar' })
         await assertGlobalErrorEvent(globalMessages[0])
       })
+
+      test('includes the page and visit id in the event detail', async ({ page }) => {
+        await listenForGlobalMessages(page, 'inertia:before')
+        await listenForGlobalMessages(page, 'inertia:error')
+        await clickAndWaitForResponse(page, 'Error Event', 'events/errors')
+
+        const beforeMessages = await waitForGlobalMessages(page, 'inertia:before', 1)
+        const globalMessages = await waitForGlobalMessages(page, 'inertia:error', 1)
+
+        await assertPageObject(globalMessages[0].detail.page)
+        await expect(globalMessages[0].detail.visitId).toBe(beforeMessages[0].detail.visit.id)
+      })
     })
 
     test.describe('Local Event Callbacks', () => {
@@ -483,6 +567,29 @@ test.describe('Events', () => {
       // Global events should not have fired
       await expect(globalMessages).toHaveLength(0)
     })
+
+    test('gets fired when a non-Inertia response is received (link)', async ({ page }) => {
+      await listenForGlobalMessages(page, 'inertia:httpException')
+      await clickAndWaitForResponse(page, 'HTTP Exception Event Link', 'non-inertia', 'button')
+
+      const messages = await waitForMessages(page, 2)
+      const globalMessages = await waitForGlobalMessages(page, 'inertia:httpException', 1)
+
+      await expect(messages[0]).toBe('linkOnHttpException')
+      await expect(messages[1]).toBe(200)
+      await assertIsGlobalEvent(globalMessages[0], 'inertia:httpException', true)
+    })
+
+    test('can prevent the default behavior from the link callback', async ({ page }) => {
+      await listenForGlobalMessages(page, 'inertia:httpException')
+      await clickAndWaitForResponse(page, 'HTTP Exception Event Link (Prevent)', 'non-inertia', 'button')
+
+      const messages = await waitForMessages(page, 1)
+      const globalMessages = await waitForGlobalMessages(page, 'inertia:httpException')
+
+      await expect(messages[0]).toBe('linkOnHttpException')
+      await expect(globalMessages).toHaveLength(0)
+    })
   })
 
   test.describe('httpException with Inertia error page response', () => {
@@ -546,6 +653,42 @@ test.describe('Events', () => {
 
       // Local Event Callback fires
       await expect(messages[0]).toBe('onNetworkError')
+    })
+
+    test('gets fired when an unexpected situation occurs (link)', async ({ page }) => {
+      await listenForGlobalMessages(page, 'inertia:networkError', true)
+      await page.getByRole('button', { exact: true, name: 'Network Error Event Link' }).click()
+
+      const messages = await waitForMessages(page, 2)
+      const globalMessages = await waitForGlobalMessages(page, 'inertia:networkError', 1)
+
+      await expect(messages[0]).toBe('linkOnNetworkError')
+      await assertIsGlobalEvent(globalMessages[0], 'inertia:networkError', true)
+    })
+
+    test('can prevent the default behavior from the link callback', async ({ page }) => {
+      await listenForGlobalMessages(page, 'inertia:networkError', true)
+      await page.getByRole('button', { exact: true, name: 'Network Error Event Link (Prevent)' }).click()
+
+      const messages = await waitForMessages(page, 1)
+      const globalMessages = await waitForGlobalMessages(page, 'inertia:networkError')
+
+      await expect(messages[0]).toBe('linkOnNetworkError')
+      await expect(globalMessages).toHaveLength(0)
+    })
+  })
+
+  test.describe('flash', () => {
+    test('fires with the flash data from the response (link)', async ({ page }) => {
+      await listenForGlobalMessages(page, 'inertia:flash')
+      await clickAndWaitForResponse(page, 'Flash Event Link', 'events/flash', 'button')
+
+      const messages = await waitForMessages(page, 2)
+      const globalMessages = await waitForGlobalMessages(page, 'inertia:flash', 1)
+
+      await expect(messages[0]).toBe('linkOnFlash')
+      await expect(messages[1]).toEqual({ foo: 'bar' })
+      await assertIsGlobalEvent(globalMessages[0], 'inertia:flash', false)
     })
   })
 

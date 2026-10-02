@@ -3,9 +3,10 @@ import { get, set } from 'es-toolkit/compat'
 import { progress } from '.'
 import { config } from './config'
 import { eventHandler } from './eventHandler'
-import { fireBeforeEvent, fireFlashEvent } from './events'
+import { fireBeforeEvent, fireClientVisitEvent, fireFlashEvent } from './events'
 import { history } from './history'
 import { InitialVisit } from './initialVisit'
+import { setPathPreservingIdentity, stripTopLevelUndefined } from './objectUtils'
 import { page as currentPage } from './page'
 import { polls } from './polls'
 import { prefetchedRequests } from './prefetched'
@@ -27,6 +28,7 @@ import {
   OptimisticCallback,
   Page,
   PageFlashData,
+  PageProps,
   PendingVisit,
   PollOptions,
   PrefetchedResponse,
@@ -40,6 +42,7 @@ import {
   VisitHelperOptions,
   VisitOptions,
 } from './types'
+import { uid } from './uid'
 import {
   hrefToUrl,
   isSameUrlWithoutHash,
@@ -149,6 +152,7 @@ export class Router {
   protected doReload<T extends RequestPayload = RequestPayload>(
     options: ReloadOptions<T> & {
       deferredProps?: boolean
+      poll?: boolean
     } = {},
   ): void {
     if (typeof window === 'undefined') {
@@ -186,8 +190,28 @@ export class Router {
     return eventHandler.onGlobalEvent(type, callback)
   }
 
+  public once<TEventName extends GlobalEventNames>(
+    type: TEventName,
+    callback: (event: GlobalEvent<TEventName>) => GlobalEventResult<TEventName>,
+  ): VoidFunction {
+    if (typeof window === 'undefined') {
+      return () => {}
+    }
+
+    const remove = this.on(type, (event) => {
+      remove()
+      return callback(event)
+    })
+
+    return remove
+  }
+
   public hasPendingOptimistic(): boolean {
     return this.asyncRequestStream.hasPendingOptimistic()
+  }
+
+  public get activePolls(): number {
+    return polls.count
   }
 
   public cancelAll({ async = true, prefetch = true, sync = true } = {}): void {
@@ -200,11 +224,32 @@ export class Router {
     }
   }
 
-  public poll(interval: number, requestOptions: ReloadOptions = {}, options: PollOptions = {}) {
-    return polls.add(interval, () => this.reload({ preserveErrors: true, ...requestOptions }), {
-      autoStart: options.autoStart ?? true,
-      keepAlive: options.keepAlive ?? false,
-    })
+  public poll(interval: number, requestOptions: ReloadOptions | (() => ReloadOptions) = {}, options: PollOptions = {}) {
+    return polls.add(
+      interval,
+      ({ onStart, onFinish }) => {
+        const resolved = typeof requestOptions === 'function' ? requestOptions() : requestOptions
+
+        this.doReload({
+          poll: true,
+          preserveErrors: true,
+          ...resolved,
+          onCancelToken: (token) => {
+            onStart(token.cancel)
+            resolved.onCancelToken?.(token)
+          },
+          onFinish: (visit) => {
+            onFinish()
+            resolved.onFinish?.(visit)
+          },
+        })
+      },
+      {
+        autoStart: options.autoStart ?? true,
+        keepAlive: options.keepAlive ?? false,
+        mode: options.mode,
+      },
+    )
   }
 
   public visit<T extends RequestPayload = RequestPayload>(
@@ -240,8 +285,15 @@ export class Router {
       : isSameUrlWithoutHash(visit.url, currentPageUrl)
 
     if (!isSamePage) {
-      // Only cancel non-prefetch requests (deferred props + partial reloads)
-      this.asyncRequestStream.cancelInFlight({ prefetch: false, optimistic: false })
+      // Cancel in-flight requests aimed at the page we're navigating away from
+      // (deferred props, partial reloads, plain reloads), but leave prefetches,
+      // optimistic requests, and background async visits to other pages untouched
+      this.asyncRequestStream.cancelInFlight(
+        (request) =>
+          !request.isPrefetch() &&
+          !request.isOptimistic() &&
+          isSameUrlWithoutQueryOrHash(request.getUrl(), currentPageUrl),
+      )
     }
 
     // Interrupt in-flight requests before taking the optimistic snapshot
@@ -250,8 +302,12 @@ export class Router {
       this.syncRequestStream.interruptInFlight()
     }
 
+    let optimisticId: number | null = null
+
     if (options.optimistic) {
-      this.applyOptimisticUpdate(options.optimistic, events)
+      optimisticId = currentPage.nextOptimisticId()
+
+      this.applyOptimisticUpdate(options.optimistic, events, optimisticId)
     }
 
     if (!currentPage.isCleared() && !visit.preserveUrl) {
@@ -273,7 +329,7 @@ export class Router {
       } else {
         progress.reveal(true)
         const requestStream = visit.async ? this.asyncRequestStream : this.syncRequestStream
-        requestStream.send(Request.create(requestParams, currentPage.get(), { optimistic: !!options.optimistic }))
+        requestStream.send(Request.create(requestParams, currentPage.get(), { optimisticId }))
       }
     }
 
@@ -287,6 +343,7 @@ export class Router {
     if (visit.component) {
       history.processQueue().then(() => {
         this.performInstantSwap(visit).then(() => {
+          requestParams.preserveScroll = true
           requestParams.preserveState = true
           requestParams.replace = true
           requestParams.viewTransition = false
@@ -423,7 +480,7 @@ export class Router {
       props(currentProps) {
         const newValue = typeof value === 'function' ? value(get(currentProps, name), currentProps) : value
 
-        return set(cloneDeep(currentProps), name, newValue)
+        return setPathPreservingIdentity(currentProps, name, newValue)
       },
       ...(options || {}),
     })
@@ -539,14 +596,19 @@ export class Router {
     const preserveScroll = RequestParams.resolvePreserveOption(params.preserveScroll ?? false, page)
     const preserveState = RequestParams.resolvePreserveOption(params.preserveState ?? false, page)
 
+    const visitId = this.createVisitId()
+
     return currentPage
       .set(page, {
         replace,
         preserveScroll,
         preserveState,
         viewTransition,
+        visitId,
       })
       .then(() => {
+        fireClientVisitEvent(currentPage.get(), { replace, visitId })
+
         const currentFlash = currentPage.get().flash
 
         if (Object.keys(currentFlash).length > 0) {
@@ -582,6 +644,8 @@ export class Router {
 
     const intermediateProps = resolvedPageProps !== null ? { ...resolvedPageProps } : { ...sharedProps }
 
+    const onceProps = this.preserveOncePropsOnInstantVisit(current, intermediateProps)
+
     const intermediatePage: Page = {
       component: visit.component!,
       url: visit.url.pathname + visit.url.search + visit.url.hash,
@@ -591,9 +655,11 @@ export class Router {
         errors: {},
       },
       flash: {},
+      rescuedProps: [],
       clearHistory: false,
       encryptHistory: current.encryptHistory,
       sharedProps: current.sharedProps,
+      onceProps,
       rememberedState: {},
     }
 
@@ -602,7 +668,36 @@ export class Router {
       preserveScroll: RequestParams.resolvePreserveOption(visit.preserveScroll, intermediatePage),
       preserveState: false,
       viewTransition: visit.viewTransition,
+      visitId: visit.id,
     })
+  }
+
+  /**
+   * Once props are remembered client-side, so the placeholder page must preserve their values
+   * and registry. Otherwise the swap discards the value, and an in-flight prefetch that already
+   * claimed the prop resolves with nothing to restore it from.
+   */
+  protected preserveOncePropsOnInstantVisit(current: Page, props: PageProps): Page['onceProps'] {
+    const onceProps: NonNullable<Page['onceProps']> = {}
+
+    Object.entries(current.onceProps ?? {}).forEach(([key, onceProp]) => {
+      if (get(props, onceProp.prop) !== undefined) {
+        // The visit provided its own value, so we can't claim to remember the once prop
+        return
+      }
+
+      const currentValue = get(current.props, onceProp.prop)
+
+      if (currentValue === undefined) {
+        return
+      }
+
+      set(props, onceProp.prop, currentValue)
+
+      onceProps[key] = onceProp
+    })
+
+    return onceProps
   }
 
   protected getPrefetchParams(href: string | URL | UrlMethodPair, options: VisitOptions): ActiveVisit {
@@ -616,6 +711,10 @@ export class Router {
       }),
       ...this.getVisitEvents(options),
     }
+  }
+
+  protected createVisitId(): string {
+    return uid()
   }
 
   protected getPendingVisit(href: string | URL | UrlMethodPair, options: VisitOptions): PendingVisit {
@@ -654,8 +753,9 @@ export class Router {
       viewTransition: false,
       component: null,
       pageProps: null,
-      ...options,
-      ...configuredOptions,
+      cached: false,
+      ...stripTopLevelUndefined(options),
+      ...stripTopLevelUndefined(configuredOptions),
     }
 
     const [url, _data] = transformUrlAndData(
@@ -667,6 +767,7 @@ export class Router {
     )
 
     const visit = {
+      id: this.createVisitId(),
       cancelled: false,
       completed: false,
       interrupted: false,
@@ -701,7 +802,7 @@ export class Router {
     }
   }
 
-  protected applyOptimisticUpdate(optimistic: OptimisticCallback, events: VisitCallbacks): void {
+  protected applyOptimisticUpdate(optimistic: OptimisticCallback, events: VisitCallbacks, id: number): void {
     const currentProps = currentPage.get().props
     const optimisticProps = optimistic(cloneDeep(currentProps))
 
@@ -721,7 +822,6 @@ export class Router {
       return
     }
 
-    const id = currentPage.nextOptimisticId()
     const component = currentPage.get().component
 
     for (const key of changedKeys) {
@@ -736,6 +836,8 @@ export class Router {
     const originalOnSuccess = events.onSuccess
     events.onSuccess = (page) => {
       shouldRestore = false
+      currentPage.markOptimisticConfirmed(id)
+
       return originalOnSuccess(page)
     }
 

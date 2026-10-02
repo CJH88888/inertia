@@ -5,6 +5,7 @@ const bodyParser = require('body-parser')
 const multer = require('multer')
 const { showServerStatus } = require('./server-status')
 const { getUserNames, paginateUsers } = require('./eloquent')
+const { randomUUID } = require('crypto')
 
 const app = express()
 
@@ -29,6 +30,19 @@ app.all('/non-inertia', (req, res) =>
       <body>
         <h1>This is a page that does not have the Inertia app loaded.</h1>
         <p><a href="/navigate-non-inertia">Go to Inertia page</a></p>
+      </body>
+    </html>
+  `),
+)
+
+app.post('/non-inertia/xss', (req, res) =>
+  res.status(200).send(`
+    <!DOCTYPE html>
+    <html>
+      <head><title>XSS Test Page</title></head>
+      <body>
+        <script>window.parent.xssExecuted = true;<\/script>
+        <p>XSS test page</p>
       </body>
     </html>
   `),
@@ -61,11 +75,28 @@ app.get('/ssr/page2', (req, res) =>
   }),
 )
 
+app.get('/ssr/bigint', (req, res) =>
+  inertia.renderSSR(req, res, {
+    component: 'SSR/BigInt',
+    props: {
+      big: 900719925474099988n,
+      nested: { deep: [900719925474099988n, 2n] },
+    },
+  }),
+)
+
+app.get('/ssr/when-mounted', (req, res) =>
+  inertia.renderSSR(req, res, {
+    component: 'SSR/WhenMounted',
+    props: {},
+  }),
+)
+
 app.get('/ssr/page-with-script-element', (req, res) =>
   inertia.renderSSR(req, res, {
     component: 'SSR/PageWithScriptElement',
     props: {
-      message: 'Hello from script element! Escape </script>.',
+      message: 'Hello from script element! Escape </script> and <!--<script>.',
     },
   }),
 )
@@ -88,6 +119,46 @@ app.get('/ssr/layout-props-callback', (req, res) =>
   inertia.renderSSR(req, res, {
     component: 'SSR/LayoutPropsCallback',
     props: { pageTitle: 'Callback Title' },
+  }),
+)
+
+app.get('/ssr/head-title', (req, res) =>
+  inertia.renderSSR(req, res, {
+    component: 'SSR/HeadTitle',
+    props: { titleSuffix: 'From Props' },
+  }),
+)
+
+app.get('/ssr/head-with-xss-title', (req, res) =>
+  inertia.renderSSR(req, res, {
+    component: 'SSR/HeadWithXssTitle',
+    props: {
+      title: "Safe Title\n</title><script>alert('xss')</script>",
+    },
+  }),
+)
+
+app.get('/ssr/multibyte-body', (req, res) =>
+  inertia.renderSSR(req, res, {
+    component: 'SSR/MultiByteBody',
+    props: {
+      // Large enough that the JSON body sent to the SSR server spans many chunks,
+      // so a chunk boundary is guaranteed to land inside a multi-byte character
+      text: '日本語のテスト'.repeat(25000),
+    },
+  }),
+)
+
+app.get('/ssr/server-head', (req, res) =>
+  inertia.renderSSR(req, res, {
+    component: 'SSR/ServerHead',
+    props: {
+      head: [
+        '<title data-inertia="title">Server Head SSR</title>',
+        '<meta data-inertia="description" name="description" content="Rendered on the server">',
+        '<link data-inertia="canonical" rel="canonical" href="https://example.com/ssr">',
+      ],
+    },
   }),
 )
 
@@ -115,7 +186,13 @@ app.get('/ssr-auto/page2', (req, res) =>
 app.get('/ssr-auto/with-app', (req, res) =>
   inertia.renderSSRAuto(req, res, {
     component: 'SSR/WithApp',
-    props: {},
+    props: { locale: 'en-CA' },
+  }),
+)
+
+app.get('/ssr-auto/async', (req, res) =>
+  inertia.renderSSRAuto(req, res, {
+    component: 'SSR/Async',
   }),
 )
 
@@ -128,6 +205,86 @@ app.get('/ssr/infinite-scroll', (req, res) => {
     scrollProps: { users: scrollProp },
   })
 })
+
+app.get('/when-mounted', (req, res) =>
+  inertia.render(req, res, {
+    component: 'WhenMounted',
+    props: {},
+  }),
+)
+
+// Big integer test routes
+app.get('/bigint', (req, res) =>
+  inertia.render(req, res, {
+    component: 'BigInt',
+    props: {
+      safe: 42,
+      big: 900719925474099988n,
+      negative: -900719925474099988n,
+      nested: { deep: [900719925474099988n, 2n] },
+      huge: 9223372036854775807n,
+    },
+    encryptHistory: req.query.encrypt !== 'false',
+  }),
+)
+
+app.get('/bigint/reload', (req, res) =>
+  inertia.render(req, res, {
+    component: 'BigInt',
+    props: {
+      safe: 100,
+      big: 123456789012345678n,
+      negative: -900719925474099988n,
+      nested: { deep: [900719925474099988n, 2n] },
+      huge: 9223372036854775807n,
+    },
+    encryptHistory: req.query.encrypt !== 'false',
+  }),
+)
+
+app.get('/bigint/collision', (req, res) =>
+  inertia.render(req, res, {
+    component: 'BigInt',
+    props: {
+      safe: 42,
+      big: 1,
+      negative: -1,
+      huge: 2,
+      nested: { deep: [1, 2] },
+      collision: { $bigint: '123' },
+    },
+  }),
+)
+
+app.get('/bigint/unflagged', (req, res) =>
+  inertia.render(req, res, {
+    component: 'BigInt',
+    props: {
+      safe: 42,
+      big: 1,
+      negative: -1,
+      huge: 2,
+      nested: { deep: [1, 2] },
+      collision: { $bigint: '123' },
+    },
+    preserveBigIntegers: false,
+    encryptHistory: true,
+  }),
+)
+
+app.post('/bigint/echo', (req, res) =>
+  inertia.render(req, res, {
+    component: 'BigInt',
+    props: {
+      safe: 42,
+      big: req.body.value,
+      echoedType: typeof req.body.value,
+      negative: -900719925474099988n,
+      nested: { deep: [900719925474099988n, 2n] },
+      huge: 9223372036854775807n,
+    },
+  }),
+)
 
 // createInertiaApp (unified) test routes
 app.get('/unified', (req, res) =>
@@ -163,6 +320,13 @@ app.get('/unified/strict-mode', (req, res) =>
   inertia.renderUnified(req, res, {
     component: 'Unified/StrictMode',
     props: {},
+  }),
+)
+
+app.get('/unified/with-app', (req, res) =>
+  inertia.renderUnified(req, res, {
+    component: 'SSR/WithApp',
+    props: { locale: 'en-CA' },
   }),
 )
 
@@ -353,6 +517,17 @@ app.get('/client-side-visit/props', (req, res) =>
       count: 5,
       singleValue: 'hello',
       undefinedValue: undefined,
+    },
+  }),
+)
+
+app.get('/client-side-visit/replace-prop-rerender', (req, res) =>
+  inertia.render(req, res, {
+    component: 'ClientSideVisit/ReplacePropRerender',
+    props: {
+      user: { name: 'John Doe' },
+      other: { label: 'untouched' },
+      profile: { name: 'John Doe', avatar: { label: 'avatar.png' } },
     },
   }),
 )
@@ -892,11 +1067,25 @@ app.get('/layout-props/callback', (req, res) => inertia.render(req, res, { props
 app.get('/layout-props/callback-default', (req, res) => inertia.render(req, res, { props: { userName: 'Jane' } }))
 app.get('/layout-props/callback-static', (req, res) => inertia.render(req, res))
 app.get('/layout-props/static-object', (req, res) => inertia.render(req, res))
+app.get('/layout-props/callback-function-prop', (req, res) => inertia.render(req, res))
+app.get('/layout-props/callback-all-function-props', (req, res) => inertia.render(req, res))
+app.get('/layout-props/callback-component-prop', (req, res) => inertia.render(req, res))
 
 app.post('/events/errors', (req, res) =>
   inertia.render(req, res, { component: 'Events', props: { errors: { foo: 'bar' } } }),
 )
+app.post('/events/flash', (req, res) => inertia.render(req, res, { component: 'Events', flash: { foo: 'bar' } }))
 
+app.get('/poll/overlap/:mode', (req, res) => {
+  const mode = req.params.mode
+  const delay = parseInt(req.query.delay) || 600
+  setTimeout(() => {
+    inertia.render(req, res, {
+      component: 'Poll/Overlap',
+      props: { mode, time: Date.now() },
+    })
+  }, delay)
+})
 app.get('/poll/hook/manual', (req, res) => inertia.render(req, res, { component: 'Poll/HookManual', props: {} }))
 app.get('/poll/router/manual', (req, res) => inertia.render(req, res, { component: 'Poll/RouterManual', props: {} }))
 app.get('/poll/unchanged-data', (req, res) =>
@@ -932,6 +1121,16 @@ app.post('/poll/preserve-errors', (req, res) => {
   res.redirect(303, '/poll/preserve-errors')
 })
 
+app.get('/poll/dynamic-data', (req, res) =>
+  inertia.render(req, res, {
+    component: 'Poll/DynamicData',
+    props: {
+      counter: req.query.bump !== undefined ? Number(req.query.bump) : 0,
+      last_received: req.query.counter_seen !== undefined ? Number(req.query.counter_seen) : null,
+    },
+  }),
+)
+
 app.get('/prefetch/form', (req, res) =>
   inertia.render(req, res, {
     component: 'Prefetch/Form',
@@ -956,8 +1155,16 @@ app.get('/prefetch/preserve-state', (req, res) => {
 
 // Registered explicitly to prevent the :pageNumber catch-all below from matching
 app.get('/prefetch/after-error', (req, res) => inertia.render(req, res, { component: 'Prefetch/AfterError' }))
+app.get('/prefetch/cancelled', (req, res) => inertia.render(req, res, { component: 'Prefetch/Cancelled' }))
 app.get('/prefetch/test-page', (req, res) => inertia.render(req, res, { component: 'Prefetch/TestPage' }))
 app.get('/prefetch/wayfinder', (req, res) => inertia.render(req, res, { component: 'Prefetch/Wayfinder' }))
+app.get('/prefetch/navigate-event', (req, res) => inertia.render(req, res, { component: 'Prefetch/NavigateEvent' }))
+app.get('/prefetch/navigate-event/cached', (req, res) =>
+  inertia.render(req, res, { component: 'Prefetch/NavigateEventTarget', props: { label: 'cached' } }),
+)
+app.get('/prefetch/navigate-event/fresh', (req, res) =>
+  inertia.render(req, res, { component: 'Prefetch/NavigateEventTarget', props: { label: 'fresh' } }),
+)
 
 app.get('/prefetch/:pageNumber', (req, res) => {
   inertia.render(req, res, {
@@ -1017,6 +1224,27 @@ app.get('/history/version/:pageNumber', (req, res) => {
       pageNumber: req.params.pageNumber,
     },
     version: req.params.pageNumber === '1' ? 'version-1' : 'version-2',
+  })
+})
+
+let historyVersionReloadDeploy = '1'
+
+app.get('/history-version-reload/deploy/:deploy', (req, res) => {
+  historyVersionReloadDeploy = req.params.deploy
+
+  res.json({ deploy: historyVersionReloadDeploy })
+})
+
+app.get('/history-version-reload', (req, res) => {
+  // Prevents the browser from serving this document from cache on a back navigation
+  res.header('Cache-Control', 'no-store')
+
+  inertia.render(req, res, {
+    component: 'HistoryVersionReload',
+    props: {
+      deploy: historyVersionReloadDeploy,
+    },
+    version: `deploy-${historyVersionReloadDeploy}`,
   })
 })
 
@@ -1626,6 +1854,20 @@ app.get('/deferred-props/rapid-navigation{/:id}', (req, res) => {
   )
 })
 
+app.get('/async-visits/page-a', (req, res) => inertia.render(req, res, { component: 'AsyncVisits/PageA' }))
+
+app.get('/async-visits/page-b', (req, res) => {
+  setTimeout(() => inertia.render(req, res, { component: 'AsyncVisits/PageB' }), 600)
+})
+
+app.get('/async-visits/page-c', (req, res) => inertia.render(req, res, { component: 'AsyncVisits/PageC' }))
+
+app.get('/async-visits/reload-origin', (req, res) => {
+  const delay = req.headers['x-repro-delay'] ? 600 : 0
+
+  setTimeout(() => inertia.render(req, res, { component: 'AsyncVisits/ReloadOrigin' }), delay)
+})
+
 app.get('/deferred-props/partial-reloads', (req, res) => {
   if (!req.headers['x-inertia-partial-data']) {
     return inertia.render(req, res, {
@@ -1698,6 +1940,37 @@ app.post('/deferred-props/with-errors', (req, res) => {
   deferredPropsWithErrorsState = { name: 'The name field is required.' }
 
   res.redirect(303, '/deferred-props/with-errors')
+})
+
+app.get('/deferred-props/with-rescued-errors', (req, res) => {
+  if (!req.headers['x-inertia-partial-data']) {
+    return inertia.render(req, res, {
+      component: 'DeferredProps/WithRescuedErrors',
+      deferredProps: {
+        default: ['foo'],
+      },
+      props: {},
+    })
+  }
+
+  setTimeout(() => {
+    if (req.headers['x-test-retry']) {
+      return inertia.render(req, res, {
+        component: 'DeferredProps/WithRescuedErrors',
+        props: {
+          foo: { text: 'foo value' },
+        },
+      })
+    }
+
+    return inertia.render(req, res, {
+      component: 'DeferredProps/WithRescuedErrors',
+      rescuedProps: ['foo'],
+      props: {
+        foo: null,
+      },
+    })
+  }, 250)
 })
 
 app.get('/deferred-props/with-reload', (req, res) => {
@@ -1812,6 +2085,17 @@ app.post('/redirect-hash', (req, res) => {
 })
 
 app.get('/location', ({ res }) => inertia.location(res, '/dump/get'))
+app.get('/visits/async-location-visit', (req, res) => {
+  if (req.headers['x-simulate-version-change']) {
+    return inertia.location(res, req.originalUrl, 'updated-version')
+  }
+
+  if (req.headers['x-simulate-manual-location']) {
+    return inertia.location(res, '/dump/get')
+  }
+
+  inertia.render(req, res, { component: 'Visits/AsyncLocationVisit' })
+})
 app.post('/redirect-external', (req, res) => inertia.location(res, '/non-inertia'))
 app.post('/disconnect', (req, res) => res.socket.destroy())
 app.post('/json', (req, res) => res.status(200).json({ foo: 'bar' }))
@@ -1882,6 +2166,22 @@ app.post('/form-component/errors/bag', (req, res) =>
 app.post('/form-component/events/delay', upload.any(), async (req, res) =>
   setTimeout(() => inertia.render(req, res, { component: 'FormComponent/Events' }), 500),
 )
+app.get('/form-component/unmount-cancel/:cancelOnUnmount', (req, res) =>
+  inertia.render(req, res, {
+    component: 'FormComponent/UnmountCancel',
+    props: { cancelOnUnmount: req.params.cancelOnUnmount === 'yes' },
+  }),
+)
+app.post('/form-component/unmount-cancel/:cancelOnUnmount', upload.any(), async (req, res) =>
+  setTimeout(
+    () =>
+      inertia.render(req, res, {
+        component: 'FormComponent/UnmountCancel',
+        props: { cancelOnUnmount: req.params.cancelOnUnmount === 'yes' },
+      }),
+    500,
+  ),
+)
 app.get('/form-component/disable-while-processing/:disable', upload.any(), async (req, res) =>
   inertia.render(req, res, {
     component: 'FormComponent/DisableWhileProcessing',
@@ -1902,6 +2202,12 @@ app.post('/form-component/disable-while-processing/:disable/submit', upload.any(
     500,
   ),
 )
+app.get('/form-component/async-on-success', upload.any(), async (req, res) =>
+  inertia.render(req, res, { component: 'FormComponent/AsyncOnSuccess' }),
+)
+app.post('/form-component/async-on-success/submit', upload.any(), async (req, res) =>
+  inertia.render(req, res, { component: 'FormComponent/AsyncOnSuccess' }),
+)
 app.post('/form-component/events/success', async (req, res) =>
   inertia.render(req, res, { component: 'FormComponent/Events' }),
 )
@@ -1910,6 +2216,9 @@ app.post('/form-component/events/errors', async (req, res) =>
     component: 'FormComponent/Events',
     props: { errors: { field: 'Something went wrong' } },
   }),
+)
+app.post('/form-component/events/flash', async (req, res) =>
+  inertia.render(req, res, { component: 'FormComponent/Events', flash: { message: 'Form was submitted' } }),
 )
 
 app.post('/form-component/progress', async (req, res) =>
@@ -2032,6 +2341,7 @@ app.get('/infinite-scroll/remember-state', (req, res) =>
   renderInfiniteScroll(req, res, 'InfiniteScroll/RememberState', 60),
 )
 app.get('/infinite-scroll/toggles', (req, res) => renderInfiniteScroll(req, res, 'InfiniteScroll/Toggles'))
+app.get('/infinite-scroll/unmount-race', (req, res) => renderInfiniteScroll(req, res, 'InfiniteScroll/UnmountRace'))
 app.get('/infinite-scroll/trigger-both', (req, res) => renderInfiniteScroll(req, res, 'InfiniteScroll/TriggerBoth'))
 app.get('/infinite-scroll/trigger-end-buffer', (req, res) =>
   renderInfiniteScroll(req, res, 'InfiniteScroll/TriggerEndBuffer'),
@@ -2080,6 +2390,22 @@ app.get('/infinite-scroll/programmatic-ref', (req, res) =>
 app.get('/infinite-scroll/short-content', (req, res) =>
   renderInfiniteScroll(req, res, 'InfiniteScroll/ShortContent', 100, false, 5),
 )
+app.get('/infinite-scroll/navigate-away', (req, res) => {
+  const page = req.query.page ? parseInt(req.query.page) : 1
+  const partialReload = !!req.headers['x-inertia-partial-data']
+  const shouldAppend = req.headers['x-inertia-infinite-scroll-merge-intent'] !== 'prepend'
+  const { paginated, scrollProp } = paginateUsers(page, 15, 40, false)
+
+  const render = () =>
+    inertia.render(req, res, {
+      component: 'InfiniteScroll/NavigateAway',
+      props: { users: paginated },
+      [shouldAppend ? 'mergeProps' : 'prependProps']: ['users.data'],
+      scrollProps: { users: scrollProp },
+    })
+
+  partialReload ? setTimeout(render, 1000) : render()
+})
 app.get('/infinite-scroll/invisible-first-child', (req, res) =>
   renderInfiniteScroll(req, res, 'InfiniteScroll/InvisibleFirstChild'),
 )
@@ -2347,6 +2673,34 @@ app.get('/infinite-scroll/deferred', (req, res) => {
   )
 })
 
+// Optional scroll prop via WhenVisible - simulates Inertia::optional(fn() => Inertia::scroll(...))
+app.get('/infinite-scroll/optional-when-visible', (req, res) => {
+  const page = req.query.page ? parseInt(req.query.page) : 1
+  const partialReload = !!req.headers['x-inertia-partial-data']
+  const shouldAppend = req.headers['x-inertia-infinite-scroll-merge-intent'] !== 'prepend'
+  const { paginated, scrollProp } = paginateUsers(page, 15, 40, false)
+
+  if (!partialReload) {
+    // Initial page load - no users prop and no scrollProps (optional prop excluded)
+    return inertia.render(req, res, {
+      component: 'InfiniteScroll/OptionalWhenVisible',
+      props: {},
+    })
+  }
+
+  // WhenVisible partial reload - send both the data AND scrollProps
+  setTimeout(
+    () =>
+      inertia.render(req, res, {
+        component: 'InfiniteScroll/OptionalWhenVisible',
+        props: { users: paginated },
+        [shouldAppend ? 'mergeProps' : 'prependProps']: ['users.data'],
+        scrollProps: { users: scrollProp },
+      }),
+    250,
+  )
+})
+
 let infiniteScrollPreserveErrorsState = {}
 
 app.get('/infinite-scroll/preserve-errors', (req, res) => {
@@ -2392,12 +2746,20 @@ app.post('/flash/events/with-data', (req, res) =>
   }),
 )
 app.post('/flash/events/without-data', (req, res) => inertia.render(req, res, { component: 'Flash/Events' }))
+app.post('/flash/events/with-errors', (req, res) =>
+  inertia.render(req, res, {
+    component: 'Flash/Events',
+    props: { errors: { name: 'The name field is required.' } },
+    flash: { foo: 'bar' },
+  }),
+)
 app.get('/flash/initial', (req, res) =>
   inertia.render(req, res, {
     component: 'Flash/InitialFlash',
     flash: { message: 'Hello from server' },
   }),
 )
+app.get('/flash/location-visit', (req, res) => inertia.location(res, '/flash/initial'))
 app.get('/flash/with-infinite-scroll', (req, res) => {
   const page = req.query.page ? parseInt(req.query.page) : 1
   const partialReload = !!req.headers['x-inertia-partial-data']
@@ -2445,13 +2807,17 @@ app.get('/flash/partial', (req, res) => {
 
   let flash = { message: 'Initial flash' }
   if (req.headers['x-inertia-partial-data']) {
-    flash = flashType === 'different' ? { message: `Updated flash ${count}` } : { message: 'Initial flash' }
+    if (flashType === 'different') {
+      flash = { message: `Updated flash ${count}` }
+    } else if (flashType === 'none') {
+      flash = {}
+    }
   }
 
   inertia.render(req, res, {
     component: 'Flash/Partial',
     props: { count },
-    flash,
+    flash: Object.keys(flash).length > 0 ? flash : undefined,
   })
 })
 const getOncePropsData = (req, prop = 'foo') => {
@@ -2684,6 +3050,25 @@ app.get('/once-props/client-side-visit', (req, res) => {
   })
 })
 
+app.get('/once-props/instant/:page', (req, res) => {
+  const { isPartialRequest, shouldResolveProp, hasPropAlready } = getOncePropsData(req)
+  const page = req.params.page
+  const deferFoo = req.query.deferred === '1' && !isPartialRequest && !hasPropAlready
+  const delay = page === 'b' && !isPartialRequest ? 500 : 0
+
+  setTimeout(() => {
+    inertia.render(req, res, {
+      component: `OnceProps/InstantPage${page.toUpperCase()}`,
+      props: {
+        foo: !deferFoo && shouldResolveProp ? `foo-${page}-` + Date.now() : undefined,
+        bar: `bar-${page}`,
+      },
+      deferredProps: deferFoo ? { default: ['foo'] } : {},
+      onceProps: { foo: { prop: 'foo', expiresAt: null } },
+    })
+  }, delay)
+})
+
 app.get('/deferred-props/back-button/a', (req, res) => {
   if (!req.headers['x-inertia-partial-data']) {
     return inertia.render(req, res, {
@@ -2731,6 +3116,29 @@ app.get('/deferred-props/back-button/b', (req, res) => {
         },
       }),
     400,
+  )
+})
+
+app.get('/deferred-props/tab-duplication', (req, res) => {
+  if (!req.headers['x-inertia-partial-data']) {
+    return inertia.render(req, res, {
+      component: 'DeferredProps/TabDuplication',
+      deferredProps: {
+        default: ['message'],
+      },
+      props: {},
+    })
+  }
+
+  setTimeout(
+    () =>
+      inertia.render(req, res, {
+        component: 'DeferredProps/TabDuplication',
+        props: {
+          message: req.headers['x-inertia-partial-data']?.includes('message') ? 'Message loaded!' : undefined,
+        },
+      }),
+    300,
   )
 })
 
@@ -2878,6 +3286,17 @@ app.post('/api/upload', upload.any(), (req, res) => {
 // Headers dump endpoint
 app.all('/api/headers', upload.none(), (req, res) => {
   res.json({
+    headers: req.headers,
+    method: req.method.toLowerCase(),
+  })
+})
+
+app.post('/api/raw-body', express.raw({ type: () => true }), (req, res) => {
+  const isBuffer = Buffer.isBuffer(req.body)
+
+  res.json({
+    body: isBuffer ? req.body.toString('utf8') : null,
+    form: !isBuffer && typeof req.body === 'object' && req.body !== null ? req.body : {},
     headers: req.headers,
     method: req.method.toLowerCase(),
   })
@@ -3189,7 +3608,31 @@ app.get('/optimistic/rollback', (req, res) => {
 
 app.post('/optimistic/rollback/toggle/:id', (req, res) => {
   const delay = parseInt(req.query.delay || '500')
+  const hold = parseInt(req.query.hold || '0')
   const simulateError = req.query.error === '1'
+
+  if (hold > 0) {
+    // Commit the write and snapshot the props right away, but hold the
+    // response on the wire so it lands after later requests have settled
+    const session = getOptimisticSession(req)
+    const contact = session.contacts.find((c) => c.id === parseInt(req.params.id))
+
+    if (contact) {
+      contact.is_favorite = !contact.is_favorite
+    }
+
+    const contacts = session.contacts.map((c) => ({ ...c }))
+
+    setTimeout(() => {
+      inertia.render(req, res, {
+        component: 'Optimistic/Rollback',
+        url: '/optimistic/rollback',
+        props: { contacts },
+      })
+    }, hold)
+
+    return
+  }
 
   setTimeout(() => {
     if (simulateError) {
@@ -3293,6 +3736,103 @@ app.get('/nested-props/deferred', (req, res) => {
       }),
     300,
   )
+})
+
+app.get('/nested-props/rescued-deferred', (req, res) => {
+  const partialData = req.headers['x-inertia-partial-data']?.split(',') ?? []
+
+  if (!req.headers['x-inertia-partial-data']) {
+    return inertia.render(req, res, {
+      component: 'NestedProps/RescuedDeferred',
+      deferredProps: {
+        default: ['auth.notifications'],
+      },
+      props: {
+        auth: {
+          user: 'John Doe',
+        },
+      },
+    })
+  }
+
+  setTimeout(() => {
+    if (req.headers['x-test-retry']) {
+      return inertia.render(req, res, {
+        component: 'NestedProps/RescuedDeferred',
+        props: {
+          auth:
+            partialData.includes('auth') || partialData.includes('auth.notifications')
+              ? {
+                  user: 'John Doe',
+                  notifications: ['Notification 1', 'Notification 2', 'Notification 3'],
+                }
+              : undefined,
+        },
+      })
+    }
+
+    return inertia.render(req, res, {
+      component: 'NestedProps/RescuedDeferred',
+      rescuedProps: ['auth.notifications'],
+      props: {
+        auth: {},
+      },
+    })
+  }, 300)
+})
+
+app.get('/nested-props/rescued-deferred-except', (req, res) => {
+  const partialData = req.headers['x-inertia-partial-data']?.split(',') ?? []
+  const partialExcept = req.headers['x-inertia-partial-except']?.split(',') ?? []
+
+  if (!req.headers['x-inertia-partial-data'] && !req.headers['x-inertia-partial-except']) {
+    return inertia.render(req, res, {
+      component: 'NestedProps/RescuedDeferredExcept',
+      deferredProps: {
+        default: ['auth.notifications'],
+      },
+      props: {
+        auth: {
+          user: 'John Doe',
+          token: 'secret-token-123',
+        },
+        status: 'pending',
+      },
+    })
+  }
+
+  setTimeout(() => {
+    if (req.headers['x-test-retry']) {
+      return inertia.render(req, res, {
+        component: 'NestedProps/RescuedDeferredExcept',
+        props: {
+          auth: partialExcept.includes('auth.notifications')
+            ? {
+                user: 'John Doe',
+                token: 'rotated-token-456',
+              }
+            : {
+                user: 'John Doe',
+                token: 'rotated-token-456',
+                notifications: ['Notification 1', 'Notification 2', 'Notification 3'],
+              },
+          status: 'refreshed',
+        },
+      })
+    }
+
+    return inertia.render(req, res, {
+      component: 'NestedProps/RescuedDeferredExcept',
+      rescuedProps: ['auth.notifications'],
+      props: {
+        auth: {
+          user: 'John Doe',
+          token: 'secret-token-123',
+        },
+        status: 'pending',
+      },
+    })
+  }, 300)
 })
 
 let nestedMergeRequestCount = 0
@@ -3475,6 +4015,85 @@ app.get('/nested-props/deferred-with-siblings', (req, res) => {
     300,
   )
 })
+
+app.get('/head/plain-title', (req, res) => inertia.renderWithPlainTitle(req, res, { component: 'Head/Dataset' }))
+
+app.get('/server-head', (req, res) => {
+  const foo = `foo ${randomUUID()}`
+
+  if (req.headers['x-inertia-partial-data']) {
+    return inertia.render(req, res, {
+      component: 'ServerHead',
+      props: {
+        foo,
+      },
+    })
+  }
+
+  const head =
+    req.query.override !== undefined
+      ? [
+          '<title>Server Head Initial</title>',
+          '<meta data-inertia="description" name="description" content="Server default">',
+        ]
+      : ['<title>Server Head Initial</title>', '<meta name="description" content="Initial server head description">']
+
+  return inertia.render(req, res, {
+    component: 'ServerHead',
+    props: {
+      foo,
+      next: '/server-head/keyed',
+      head,
+    },
+  })
+})
+
+app.get('/server-head/keyed', (req, res) =>
+  inertia.render(req, res, {
+    component: 'ServerHead',
+    props: {
+      next: '/server-head/keyed/next',
+      head: [
+        '<title data-inertia="title">Keyed Head A</title>',
+        '<meta data-inertia="description" name="description" content="Keyed description A">',
+        '<link data-inertia="canonical" rel="canonical" href="https://example.com/a">',
+      ],
+    },
+  }),
+)
+
+app.get('/server-head/keyed/next', (req, res) =>
+  inertia.render(req, res, {
+    component: 'ServerHead',
+    props: {
+      next: '/server-head/keyed',
+      head: [
+        '<title data-inertia="title">Keyed Head B</title>',
+        '<meta data-inertia="robots" name="robots" content="noindex">',
+        '<meta data-inertia="description" name="description" content="Keyed description B">',
+        '<link data-inertia="canonical" rel="canonical" href="https://example.com/b">',
+      ],
+    },
+  }),
+)
+
+app.get('/server-head/custom-prop', (req, res) =>
+  inertia.render(req, res, {
+    component: 'ServerHead',
+    props: {
+      next: '/server-head',
+      metaTags: ['<title>Custom Prop Head</title>', '<meta name="description" content="Custom prop description">'],
+    },
+  }),
+)
+
+app.get('/head/title-callback', (req, res) =>
+  inertia.render(req, res, { component: 'Head/TitleCallback', props: { titleSuffix: 'Account' } }),
+)
+
+app.get('/head/reactive', (req, res) =>
+  inertia.render(req, res, { component: 'Head/Reactive', props: { titleSuffix: 'Dashboard' } }),
+)
 
 app.all('*page', (req, res) => inertia.render(req, res))
 

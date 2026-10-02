@@ -47,4 +47,42 @@ test.describe('error modal', () => {
     await page.mouse.click(25, 25)
     await expect(page.frameLocator('iframe').getByText('This is a page that does not')).toBeHidden()
   })
+
+  test('it does not execute scripts in the error dialog iframe', async ({ page }) => {
+    await page.getByText('Invalid Visit (XSS)', { exact: true }).click()
+    await expect(page.locator('dialog#inertia-error-dialog > iframe')).toBeVisible()
+    const xssExecuted = await page.evaluate(() => (window as any).xssExecuted)
+    expect(xssExecuted).toBeUndefined()
+  })
+
+  test('does not set a nonce on the dialog style tag by default', async ({ page }) => {
+    await page.getByText('Invalid Visit', { exact: true }).click()
+    await expect(page.locator('dialog#inertia-error-dialog')).toBeVisible()
+
+    const nonce = await page.evaluate(() => {
+      const style = Array.from(document.head.querySelectorAll('style')).find((el) =>
+        el.textContent?.includes('inertia-error-dialog'),
+      )
+      return style?.nonce ?? null
+    })
+
+    await expect(nonce).toBe('')
+  })
+})
+
+test('applies the configured nonce to the injected dialog style tag', async ({ page }) => {
+  pageLoads.watch(page)
+  await page.goto('/error-modal?nonce')
+
+  await page.getByText('Invalid Visit', { exact: true }).click()
+  await expect(page.locator('dialog#inertia-error-dialog')).toBeVisible()
+
+  const nonce = await page.evaluate(() => {
+    const style = Array.from(document.head.querySelectorAll('style')).find((el) =>
+      el.textContent?.includes('inertia-error-dialog'),
+    )
+    return style?.nonce ?? null
+  })
+
+  await expect(nonce).toBe('test-nonce')
 })

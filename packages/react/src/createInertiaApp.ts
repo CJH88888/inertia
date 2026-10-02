@@ -1,8 +1,10 @@
+/// <reference path="./env.d.ts" />
 import {
   buildSSRBody,
   CreateInertiaAppOptions,
   CreateInertiaAppOptionsForCSR,
   CreateInertiaAppOptionsForSSR,
+  exposeInterceptors,
   getInitialPageFromDOM,
   http as httpModule,
   InertiaAppSSRResponse,
@@ -30,7 +32,10 @@ type ComponentResolver = (
   page?: Page<SharedPageProps>,
 ) => ReactComponent | Promise<ReactComponent> | { default: ReactComponent }
 
-type ReactWithApp = (app: ReactElement, options: { ssr: boolean }) => ReactElement
+type ReactWithApp<SharedProps extends PageProps> = (
+  app: ReactElement,
+  options: { ssr: boolean; page: Page<SharedProps> },
+) => ReactElement
 
 type InertiaAppOptionsForCSR<SharedProps extends PageProps> = CreateInertiaAppOptionsForCSR<
   SharedProps,
@@ -68,7 +73,7 @@ type InertiaAppOptionsAuto<SharedProps extends PageProps> = Omit<
   render?: undefined
   strictMode?: boolean
 } & (
-    | { setup?: undefined; withApp?: ReactWithApp }
+    | { setup?: undefined; withApp?: ReactWithApp<SharedProps> }
     | { setup: (options: SetupOptions<HTMLElement | null, SharedProps>) => ReactElement | void; withApp?: never }
   )
 
@@ -98,10 +103,13 @@ export default async function createInertiaApp<SharedProps extends PageProps = P
     page,
     render,
     defaults = {},
+    nonce,
     http,
     layout,
+    serverHead,
     strictMode = false,
     withApp,
+    dev = !!import.meta.env?.DEV,
   }:
     | InertiaAppOptionsForCSR<SharedProps>
     | InertiaAppOptionsForSSR<SharedProps>
@@ -109,8 +117,16 @@ export default async function createInertiaApp<SharedProps extends PageProps = P
 ): Promise<InertiaAppSSRResponse | RenderFunction<SharedProps> | void> {
   config.replace(defaults)
 
+  if (nonce) {
+    config.set('nonce', nonce)
+  }
+
   if (http) {
     httpModule.setClient(http)
+  }
+
+  if (dev) {
+    exposeInterceptors()
   }
 
   const isServer = typeof window === 'undefined'
@@ -139,6 +155,7 @@ export default async function createInertiaApp<SharedProps extends PageProps = P
         titleCallback: title,
         onHeadUpdate: (elements: string[]) => (head = elements),
         defaultLayout: layout,
+        serverHead,
       }
 
       let reactApp: ReactElement
@@ -153,7 +170,7 @@ export default async function createInertiaApp<SharedProps extends PageProps = P
         reactApp = wrapWithStrictMode(createElement(App, props))
 
         if (withApp) {
-          reactApp = withApp(reactApp, { ssr: true })
+          reactApp = withApp(reactApp, { ssr: true, page })
         }
       }
 
@@ -179,6 +196,7 @@ export default async function createInertiaApp<SharedProps extends PageProps = P
       titleCallback: title,
       onHeadUpdate: isServer ? (elements: string[]) => (head = elements) : undefined,
       defaultLayout: layout,
+      serverHead,
     }
 
     if (isServer) {
@@ -202,7 +220,7 @@ export default async function createInertiaApp<SharedProps extends PageProps = P
     let appElement = wrapWithStrictMode(createElement(App, props))
 
     if (withApp) {
-      appElement = withApp(appElement, { ssr: false })
+      appElement = withApp(appElement, { ssr: false, page: initialPage })
     }
 
     if (el.hasAttribute('data-server-rendered')) {

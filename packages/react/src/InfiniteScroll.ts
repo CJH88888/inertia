@@ -18,6 +18,7 @@ import React, {
   useRef,
   useState,
 } from 'react'
+import { flushSync } from 'react-dom'
 import usePage from './usePage'
 
 const resolveHTMLElement = (
@@ -209,13 +210,25 @@ const InfiniteScroll = forwardRef<InfiniteScrollRef, ComponentProps>(
         // Callbacks
         onBeforePreviousRequest: () => setLoadingPrevious(true),
         onBeforeNextRequest: () => setLoadingNext(true),
-        onCompletePreviousRequest: () => {
-          setLoadingPrevious(false)
-          syncStateFromDataManager()
+        // Commit synchronously so the loading indicator is gone before the core restores
+        // the scroll position, the page itself is also swapped with flushSync()
+        onCompletePreviousRequest: ({ completed }) => {
+          flushSync(() => {
+            setLoadingPrevious(false)
+
+            if (completed) {
+              syncStateFromDataManager()
+            }
+          })
         },
-        onCompleteNextRequest: () => {
-          setLoadingNext(false)
-          syncStateFromDataManager()
+        onCompleteNextRequest: ({ completed }) => {
+          flushSync(() => {
+            setLoadingNext(false)
+
+            if (completed) {
+              syncStateFromDataManager()
+            }
+          })
         },
         onDataReset: syncStateFromDataManager,
       })

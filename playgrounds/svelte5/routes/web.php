@@ -1,12 +1,13 @@
 <?php
 
+use App\Http\Requests\BigIntegerFormRequest;
 use App\Http\Requests\PrecognitionFormRequest;
+use App\Models\Todo;
 use Illuminate\Foundation\Http\Middleware\HandlePrecognitiveRequests;
 use Illuminate\Http\Request;
 use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Route;
-use App\Models\Todo;
 use Inertia\Inertia;
 
 /*
@@ -150,7 +151,7 @@ Route::get('/login', function () {
 
 Route::get('/async', function () {
     return inertia('Async', [
-        'sleep' => Inertia::lazy(function () {
+        'sleep' => Inertia::optional(function () {
             sleep(4);
         }),
         'jonathan' => Cache::get('jonathan', false),
@@ -204,6 +205,18 @@ Route::get('/defer', function () {
     info('defer route');
 
     return inertia('Defer', [
+        'stats' => Inertia::defer(function () {
+            sleep(1);
+
+            if (! request()->hasHeader('X-Rescue-Prop-Success')) {
+                throw new RuntimeException('Failed to load stats.');
+            }
+
+            return [
+                'visitors' => 1287,
+                'revenue' => 4920,
+            ];
+        }, rescue: true),
         'users' => Inertia::defer(function () {
             sleep(1);
 
@@ -326,7 +339,7 @@ Route::get('/defer', function () {
 });
 
 Route::get('/goodbye', function () {
-    return Inertia::location('https://inertiajs.com/redirects');
+    return Inertia::location('https://inertiajs.com/docs/v3/the-basics/redirects');
 });
 
 Route::get('/poll', function () {
@@ -484,7 +497,7 @@ Route::get('/once/{page}', function (int $page) {
     return inertia($component, [
         'foo' => Inertia::once(fn () => 'foo value: '.now()->getTimestampMs())->fresh($page === 3),
         'bar' => Inertia::once(fn () => 'bar value: '.now()->getTimestampMs())->until(10),
-        'baz' . $page => Inertia::once(fn () => 'baz value: '.now()->getTimestampMs())->as('baz'),
+        'baz'.$page => Inertia::once(fn () => 'baz value: '.now()->getTimestampMs())->as('baz'),
         'qux' => Inertia::defer(fn () => 'qux value: '.now()->getTimestampMs())->once(),
     ]);
 });
@@ -539,3 +552,46 @@ Route::get('/ssr-debug', fn () => inertia('SsrDebug'));
 Route::get('/ssr-debug/window', fn () => inertia('SsrDebug/WindowError'));
 Route::get('/ssr-debug/document', fn () => inertia('SsrDebug/DocumentError'));
 Route::get('/ssr-debug/localstorage', fn () => inertia('SsrDebug/LocalStorageError'));
+
+Route::get('/big-integers', function () {
+    return inertia('BigIntegers', [
+        'safe' => 42,
+        'big' => 900719925474099988,
+        'negative' => -900719925474099988,
+        'maximum' => PHP_INT_MAX,
+        'boundary' => 9007199254740991,
+        'order' => [
+            'id' => 1234567890123456789,
+            'lines' => [
+                ['sku' => 'A-1', 'reference' => 900719925474099988],
+                ['sku' => 'B-2', 'reference' => 900719925474099989],
+            ],
+        ],
+        'wrapped' => (object) ['id' => 900719925474099988],
+    ]);
+});
+
+$bigIntegerDebug = fn (mixed $value): array => [
+    'received' => $value,
+    'type' => get_debug_type($value),
+];
+
+Route::post('/big-integers/echo', function (Request $request) use ($bigIntegerDebug) {
+    return Inertia::flash($bigIntegerDebug($request->input('id')))->back();
+});
+
+Route::post('/big-integers/validate', function (BigIntegerFormRequest $request) use ($bigIntegerDebug) {
+    return Inertia::flash($bigIntegerDebug($request->input('account_id')))->back();
+})->middleware([HandlePrecognitiveRequests::class]);
+
+Route::post('/big-integers/upload', function (Request $request) use ($bigIntegerDebug) {
+    $request->validate([
+        'account_id' => ['required', 'integer', 'min:1'],
+        'avatar' => ['required', 'file'],
+    ]);
+
+    return Inertia::flash([
+        ...$bigIntegerDebug($request->input('account_id')),
+        'avatar' => $request->file('avatar')->getClientOriginalName(),
+    ])->back();
+});

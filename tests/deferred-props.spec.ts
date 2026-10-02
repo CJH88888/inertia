@@ -43,6 +43,34 @@ test('can load deferred props', async ({ page }) => {
   await expect(page.getByText('both baz value and qux value')).toBeVisible()
 })
 
+test('can render rescued deferred props with error UI and recover on retry', async ({ page }) => {
+  await gotoPageAndWaitForContent(page, '/deferred-props/with-rescued-errors')
+
+  await expect(page.getByText('Loading foo...')).toBeVisible()
+
+  await page.waitForResponse(
+    (response) => response.request().headers()['x-inertia-partial-data'] === 'foo' && response.status() === 200,
+  )
+
+  await expect(page.getByText('Loading foo...')).not.toBeVisible()
+  await expect(page.locator('#foo-error')).toContainText('Unable to load foo.')
+  await expect(page.locator('#reloading')).toContainText('false')
+  await expect(page.locator('#foo')).toHaveCount(0)
+
+  const retryResponse = page.waitForResponse(
+    (response) => response.request().headers()['x-inertia-partial-data'] === 'foo' && response.status() === 200,
+  )
+
+  await page.getByRole('button', { exact: true, name: 'Retry' }).click()
+
+  await expect(page.locator('#reloading')).toContainText('true')
+
+  await retryResponse
+
+  await expect(page.locator('#foo-error')).not.toBeVisible()
+  await expect(page.locator('#foo')).toContainText('foo value')
+})
+
 test('we are not caching deferred props after reload', async ({ page }) => {
   await gotoPageAndWaitForContent(page, '/deferred-props/page-1')
 
@@ -491,4 +519,41 @@ test('it does not refetch deferred props that were already loaded on a previous 
   await expect(page.getByText('Slow prop loaded')).toBeVisible()
 
   expect(requests.requests).toHaveLength(0)
+})
+
+test('it restores already-resolved deferred props on a back_forward initial visit', async ({ page }) => {
+  await gotoPageAndWaitForContent(page, '/deferred-props/tab-duplication')
+
+  await expect(page.locator('#fallback')).toBeVisible()
+
+  await page.waitForResponse(page.url())
+
+  await expect(page.locator('#fallback')).not.toBeVisible()
+  await expect(page.locator('#message')).toContainText('Message loaded!')
+
+  // Duplicating a tab in Chrome or Firefox loads a fresh document that restores the
+  // original tab's history state (already holding the resolved deferred props) and is
+  // reported as a back_forward navigation. Playwright/CDP can't clone a tab, so we
+  // stand in for it: reload() keeps the real history state, and we force the reported
+  // navigation type to back_forward, which is the only signal no API exposes.
+  await page.addInitScript(() => {
+    const original = window.performance.getEntriesByType.bind(window.performance)
+
+    window.performance.getEntriesByType = (type: string) => {
+      const entries = original(type)
+
+      if (type === 'navigation') {
+        return entries.map(
+          (entry) => new Proxy(entry, { get: (t, p) => (p === 'type' ? 'back_forward' : (t as any)[p]) }),
+        )
+      }
+
+      return entries
+    }
+  })
+
+  await page.reload()
+
+  await expect(page.locator('#message')).toContainText('Message loaded!')
+  await expect(page.locator('#fallback')).not.toBeVisible()
 })

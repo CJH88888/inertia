@@ -1,3 +1,5 @@
+import { config } from './config'
+
 export default {
   createIframeAndPage(html: Record<string, unknown> | string): { iframe: HTMLIFrameElement; page: HTMLElement } {
     if (typeof html === 'object') {
@@ -15,6 +17,7 @@ export default {
     iframe.style.borderRadius = '5px'
     iframe.style.width = '100%'
     iframe.style.height = '100%'
+    iframe.setAttribute('sandbox', 'allow-scripts')
 
     return { iframe, page }
   },
@@ -47,6 +50,13 @@ export default {
         outline: none;
       }
     `
+
+    const nonce = config.get('nonce')
+
+    if (nonce) {
+      dialogStyleElement.nonce = nonce
+    }
+
     document.head.appendChild(dialogStyleElement)
 
     dialog.addEventListener('click', (event: MouseEvent) => {
@@ -66,12 +76,6 @@ export default {
 
     dialog.focus()
 
-    if (!iframe.contentWindow) {
-      throw new Error('iframe not yet ready.')
-    }
-
-    iframe.contentWindow.document.open()
-    iframe.contentWindow.document.write(page.outerHTML)
-    iframe.contentWindow.document.close()
+    iframe.srcdoc = page.outerHTML
   },
 }

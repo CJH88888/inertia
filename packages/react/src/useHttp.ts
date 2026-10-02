@@ -250,7 +250,7 @@ export default function useHttp<TForm extends FormDataType<TForm>, TResponse = u
             setResponse(responseData)
           }
 
-          options.onSuccess?.(responseData)
+          options.onSuccess?.(responseData, httpResponse)
 
           if (isMounted.current && !defaultsCalledInOnSuccessRef.current) {
             baseForm.setData((data: TForm) => {
@@ -282,7 +282,11 @@ export default function useHttp<TForm extends FormDataType<TForm>, TResponse = u
             }
 
             options.onError?.(processedErrors as Errors)
+
+            return undefined as TResponse
           }
+
+          options.onHttpException?.(error.response)
 
           throw error
         }
@@ -291,6 +295,8 @@ export default function useHttp<TForm extends FormDataType<TForm>, TResponse = u
           options.onCancel?.()
           throw new HttpCancelledError('Request was cancelled', url)
         }
+
+        options.onNetworkError?.(error instanceof Error ? error : new Error('Unknown error'))
 
         throw error
       } finally {

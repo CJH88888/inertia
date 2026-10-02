@@ -1,32 +1,36 @@
 <script module lang="ts">
-  import type { ComponentResolver, ResolvedComponent } from '../types'
   import { type Page, type PageProps } from '@inertiajs/core'
+  import type { ComponentResolver, ResolvedComponent } from '../types'
 
   export interface InertiaAppProps<SharedProps extends PageProps = PageProps> {
     initialComponent: ResolvedComponent
     initialPage: Page<SharedProps>
     resolveComponent: ComponentResolver
     defaultLayout?: (name: string, page: Page) => unknown
+    serverRendered?: boolean
   }
 </script>
 
 <script lang="ts">
-  import type { Component } from 'svelte'
-  import type { LayoutType, LayoutResolver } from '../types'
-  import { isPropsObject, normalizeLayouts } from '@inertiajs/core'
+  import { isPropsObjectOrCallback, isPropsObject, normalizeLayouts } from '@inertiajs/core'
   import { router } from '@inertiajs/core'
-  import Render, { h, type RenderProps } from './Render.svelte'
-  import { setPage } from '../page.svelte'
+  import { onMount } from 'svelte'
+  import type { Component } from 'svelte'
+  import { setHydrationContext } from '../hydration'
   import { resetLayoutProps, storeState } from '../layoutProps.svelte'
+  import { setPage } from '../page.svelte'
+  import type { LayoutType, LayoutResolver } from '../types'
+  import Render, { h, type RenderProps } from './Render.svelte'
 
   interface Props {
     initialComponent: InertiaAppProps['initialComponent']
     initialPage: InertiaAppProps['initialPage']
     resolveComponent: InertiaAppProps['resolveComponent']
     defaultLayout?: InertiaAppProps['defaultLayout']
+    serverRendered?: boolean
   }
 
-  const { initialComponent, initialPage, resolveComponent, defaultLayout }: Props = $props()
+  const { initialComponent, initialPage, resolveComponent, defaultLayout, serverRendered = true }: Props = $props()
 
   // svelte-ignore state_referenced_locally
   let component = $state(initialComponent)
@@ -47,12 +51,23 @@
 
   const isServer = typeof window === 'undefined'
 
+  // Scoped per app instance so multiple Inertia roots on one page don't clobber each other
+  // svelte-ignore state_referenced_locally
+  const hydration = $state({ hydrated: !serverRendered })
+  setHydrationContext(hydration)
+
   if (!isServer) {
+    onMount(() => (hydration.hydrated = true))
+
     // svelte-ignore state_referenced_locally
     router.init<ResolvedComponent>({
       initialPage,
       resolveComponent,
       swapComponent: async (args) => {
+        // Explicitly sync the global page store before swapping components,
+        // ensuring the page store is up-to-date when the new component's
+        // script block runs (necessary for async: true).
+        setPage(args.page)
         component = args.component
         page = args.page
         key = args.preserveState ? key : Date.now()
@@ -110,7 +125,7 @@
     ) {
       const result = (layoutValue as Function)(page.props)
 
-      if (isPropsObject(result, isComponent)) {
+      if (isPropsObjectOrCallback(result, isComponent)) {
         effectiveLayout = defaultLayout?.(page.component, page) as LayoutType | undefined
         callbackProps = result as Record<string, unknown>
       } else {

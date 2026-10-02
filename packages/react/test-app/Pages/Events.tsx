@@ -41,6 +41,24 @@ export default () => {
     )
   }
 
+  const onceInertiaListener = (e: React.MouseEvent) => {
+    e.preventDefault()
+    router.once('before', () => internalAlert('Inertia.once(before)'))
+
+    router.post(page.url, {}, { onBefore: () => internalAlert('onBefore-1') })
+    router.post(page.url, {}, { onBefore: () => internalAlert('onBefore-2') })
+  }
+
+  const removeOnceInertiaListener = (e: React.MouseEvent) => {
+    e.preventDefault()
+    const removeEventListener = router.once('before', () => internalAlert('Inertia.once(before)'))
+
+    internalAlert('Removing Inertia.once Listener')
+    removeEventListener()
+
+    router.post(page.url, {}, { onBefore: () => internalAlert('onBefore') })
+  }
+
   const beforeVisit = (e: React.MouseEvent) => {
     e.preventDefault()
     router.on('before', (event) => {
@@ -594,6 +612,12 @@ export default () => {
       <a href="#" onClick={removeInertiaListener} className="remove-inertia-listener">
         Remove Inertia Listener
       </a>
+      <a href="#" onClick={onceInertiaListener} className="register-inertia-once-listener">
+        Register Inertia Once Listener
+      </a>
+      <a href="#" onClick={removeOnceInertiaListener} className="remove-inertia-once-listener">
+        Remove Inertia Once Listener
+      </a>
 
       {/* Events: Before */}
       <a href="#" onClick={beforeVisit} className="before">
@@ -751,6 +775,16 @@ export default () => {
         Success Event Link (delaying onFinish w/ Promise)
       </Link>
 
+      {/* Events: Flash */}
+      <Link
+        href="/events/flash"
+        method="post"
+        onFlash={(flash) => internalAlert('linkOnFlash', flash)}
+        className="link-flash"
+      >
+        Flash Event Link
+      </Link>
+
       {/* Events: HTTP Exception */}
       <a href="#" onClick={httpExceptionVisit} className="http-exception">
         HTTP Exception Event
@@ -769,6 +803,26 @@ export default () => {
         HTTP Exception Event (Inertia Response Prevent)
       </a>
 
+      <Link
+        href="/non-inertia"
+        method="post"
+        onHttpException={(response) => internalAlert('linkOnHttpException', response.status)}
+        className="link-http-exception"
+      >
+        HTTP Exception Event Link
+      </Link>
+      <Link
+        href="/non-inertia"
+        method="post"
+        onHttpException={() => {
+          internalAlert('linkOnHttpException')
+          return false
+        }}
+        className="link-http-exception-prevent"
+      >
+        HTTP Exception Event Link (Prevent)
+      </Link>
+
       {/* Events: Network Error */}
       <a href="#" onClick={networkErrorVisit} className="network-error">
         Network Error Event
@@ -776,6 +830,25 @@ export default () => {
       <a href="#" onClick={networkErrorPreventVisit} className="network-error-prevent">
         Network Error Event (Prevent)
       </a>
+      <Link
+        href="/disconnect"
+        method="post"
+        onNetworkError={(error) => internalAlert('linkOnNetworkError', error.message)}
+        className="link-network-error"
+      >
+        Network Error Event Link
+      </Link>
+      <Link
+        href="/disconnect"
+        method="post"
+        onNetworkError={() => {
+          internalAlert('linkOnNetworkError')
+          return false
+        }}
+        className="link-network-error-prevent"
+      >
+        Network Error Event Link (Prevent)
+      </Link>
 
       {/* Events: Finish */}
       <a href="#" onClick={finishVisit} className="finish">

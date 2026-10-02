@@ -50,6 +50,8 @@ test.describe('useHttp', () => {
     await expect(page.locator('#validate-email-error')).toBeVisible()
     await expect(page.locator('#validate-email-error')).toContainText('The email field must be a valid email address.')
     await expect(page.locator('#validate-has-errors')).toBeVisible()
+    await expect(page.locator('#validate-on-error')).toContainText('onError called')
+    await expect(page.locator('#validate-exception')).not.toBeVisible()
   })
 
   test('it clears validation errors', async ({ page }) => {
@@ -128,6 +130,25 @@ test.describe('useHttp', () => {
 
     await expect(page.locator('#error-message')).toBeVisible()
     await expect(page.locator('#error-message')).toContainText('Server returned 500 error')
+  })
+
+  test('it fires the onHttpException callback for non-422 errors', async ({ page }) => {
+    await page.goto('/use-http')
+
+    await page.click('#http-exception-button')
+
+    await expect(page.locator('#http-exception-status')).toContainText('Status: 500')
+    await expect(page.locator('#http-exception-body')).toContainText('Internal server error')
+  })
+
+  test('it fires the onNetworkError callback on network failure', async ({ page }) => {
+    await page.goto('/use-http')
+
+    await page.route('**/api/network-error-test', (route) => route.abort('failed'))
+
+    await page.click('#network-error-button')
+
+    await expect(page.locator('#network-error-message')).toBeVisible()
   })
 
   test('it resets form to defaults', async ({ page }) => {
@@ -252,6 +273,20 @@ test.describe('useHttp', () => {
       await expect(page.locator('#upload-result')).toContainText('Files: 2')
       await expect(page.locator('#upload-result')).toContainText('file1.txt')
       await expect(page.locator('#upload-result')).toContainText('file2.txt')
+    })
+
+    test('it reports upload progress with percentage', async ({ page }) => {
+      await page.goto('/use-http/file-upload')
+
+      await page.setInputFiles('#upload-file', {
+        name: 'large-file.txt',
+        mimeType: 'text/plain',
+        buffer: Buffer.alloc(1024 * 1024, 'a'),
+      })
+      await page.click('#upload-button')
+
+      await expect(page.locator('#upload-result')).toBeVisible()
+      await expect(page.locator('#upload-progress')).toContainText('Progress: 100%')
     })
 
     test('it uses multipart/form-data for file uploads', async ({ page }) => {

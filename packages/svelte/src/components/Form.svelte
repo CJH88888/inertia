@@ -15,12 +15,12 @@
     resolveUrlMethodPairComponent,
     UseFormUtils,
   } from '@inertiajs/core'
-  import { type NamedInputEvent, type ValidationConfig, type Validator } from 'laravel-precognition'
   import { isEqual } from 'es-toolkit'
+  import { type NamedInputEvent, type ValidationConfig, type Validator } from 'laravel-precognition'
   import { onMount } from 'svelte'
-  import { setFormContext } from './formContext'
-  import useForm from '../useForm.svelte'
   import { config } from '..'
+  import useForm from '../useForm.svelte'
+  import { setFormContext } from './formContext'
 
   const noop = () => undefined
 
@@ -41,8 +41,12 @@
     onCancel?: FormComponentProps['onCancel']
     onSuccess?: FormComponentProps['onSuccess']
     onError?: FormComponentProps['onError']
+    onHttpException?: FormComponentProps['onHttpException']
+    onNetworkError?: FormComponentProps['onNetworkError']
+    onFlash?: FormComponentProps['onFlash']
     onSubmitComplete?: FormComponentProps['onSubmitComplete']
     disableWhileProcessing?: boolean
+    cancelOnUnmount?: FormComponentProps['cancelOnUnmount']
     invalidateCacheTags?: FormComponentProps['invalidateCacheTags']
     resetOnError?: FormComponentProps['resetOnError']
     resetOnSuccess?: FormComponentProps['resetOnSuccess']
@@ -74,8 +78,12 @@
     onCancel = noop,
     onSuccess = noop,
     onError = noop,
+    onHttpException = noop,
+    onNetworkError = noop,
+    onFlash = noop,
     onSubmitComplete = noop,
     disableWhileProcessing = false,
+    cancelOnUnmount = false,
     invalidateCacheTags = [],
     resetOnError = false,
     resetOnSuccess = false,
@@ -174,10 +182,11 @@
       onProgress,
       onFinish,
       onCancel,
-      onSuccess: (...args) => {
-        if (onSuccess) {
-          onSuccess(...args)
-        }
+      onHttpException,
+      onNetworkError,
+      onFlash,
+      onSuccess: async (...args) => {
+        const result = await onSuccess?.(...args)
 
         if (onSubmitComplete) {
           onSubmitComplete({
@@ -191,6 +200,8 @@
         if (setDefaultsOnSuccess === true) {
           defaults()
         }
+
+        return result
       },
       onError: (...args) => {
         if (onError) {
@@ -246,6 +257,10 @@
     isDirty = false
   }
 
+  export function cancel() {
+    form.cancel()
+  }
+
   export function validate(field?: string | NamedInputEvent | ValidationConfig, config?: ValidationConfig) {
     return form.validate(...UseFormUtils.mergeHeadersForValidation(field, config, headers!))
   }
@@ -281,6 +296,10 @@
 
     return () => {
       formEvents.forEach((e) => formElement?.removeEventListener(e, updateDirtyState))
+
+      if (cancelOnUnmount) {
+        form.cancel()
+      }
     }
   })
 
@@ -315,6 +334,7 @@
       setError,
       reset,
       submit,
+      cancel,
       defaults,
       getData,
       getFormData,
@@ -360,6 +380,7 @@
     setError,
     isDirty,
     submit,
+    cancel,
     defaults,
     reset,
     getData,

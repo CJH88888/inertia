@@ -18,10 +18,11 @@
  * - Automatic TypeScript/JSX transformation via Vite
  */
 
-import { classifySSRError, formatConsoleError } from '@inertiajs/core/ssrErrors'
 import { existsSync } from 'node:fs'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { resolve } from 'node:path'
+import { parsePage } from '@inertiajs/core/json'
+import { classifySSRError, formatConsoleError } from '@inertiajs/core/ssrErrors'
 import type { ResolvedConfig, ViteDevServer } from 'vite'
 import { collectCSSFromModuleGraph } from './css'
 
@@ -36,6 +37,11 @@ export interface InertiaSSROptions {
    * Port number for the SSR server (used in production builds).
    */
   port?: number
+
+  /**
+   * Host to bind the SSR server to (used in production builds).
+   */
+  host?: string
 
   /**
    * Enable cluster mode for the SSR server (used in production builds).
@@ -164,6 +170,7 @@ function readRequestBody<T>(req: IncomingMessage): Promise<T> {
   return new Promise((resolve, reject) => {
     let data = ''
 
+    req.setEncoding('utf8')
     req.on('data', (chunk) => (data += chunk))
 
     req.on('end', () => {
@@ -173,7 +180,7 @@ function readRequestBody<T>(req: IncomingMessage): Promise<T> {
       }
 
       try {
-        resolve(JSON.parse(data))
+        resolve(parsePage(data))
       } catch (error) {
         reject(new Error(`Invalid JSON in request body: ${error instanceof Error ? error.message : 'Unknown error'}`))
       }

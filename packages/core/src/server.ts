@@ -1,10 +1,11 @@
-import { originalPositionFor, TraceMap } from '@jridgewell/trace-mapping'
 import { createServer, IncomingMessage, ServerResponse } from 'http'
 import cluster from 'node:cluster'
 import { existsSync, readFileSync } from 'node:fs'
 import { availableParallelism } from 'node:os'
 import path from 'node:path'
 import * as process from 'process'
+import { originalPositionFor, TraceMap } from '@jridgewell/trace-mapping'
+import { parsePage } from './json'
 import { classifySSRError, formatConsoleError, setSourceMapResolver } from './ssrErrors'
 import { InertiaAppResponse, Page } from './types'
 
@@ -56,6 +57,7 @@ type AppCallback = (page: Page) => InertiaAppResponse
 type RouteHandler = (request: IncomingMessage, response: ServerResponse) => Promise<unknown>
 type ServerOptions = {
   port?: number
+  host?: string
   cluster?: boolean
   formatErrors?: boolean
 }
@@ -64,6 +66,7 @@ type Port = number
 const readableToString: (readable: IncomingMessage) => Promise<string> = (readable) =>
   new Promise((resolve, reject) => {
     let data = ''
+    readable.setEncoding('utf8')
     readable.on('data', (chunk) => (data += chunk))
     readable.on('end', () => resolve(data))
     readable.on('error', (err) => reject(err))
@@ -71,7 +74,7 @@ const readableToString: (readable: IncomingMessage) => Promise<string> = (readab
 
 export default (render: AppCallback, options?: Port | ServerOptions): AppCallback => {
   const opts = typeof options === 'number' ? { port: options } : options
-  const { port = 13714, cluster: useCluster = false, formatErrors = true } = opts ?? {}
+  const { port = 13714, host = '0.0.0.0', cluster: useCluster = false, formatErrors = true } = opts ?? {}
 
   const log = (message: string) => {
     console.log(
@@ -102,7 +105,7 @@ export default (render: AppCallback, options?: Port | ServerOptions): AppCallbac
   }
 
   const handleRender = async (request: IncomingMessage, response: ServerResponse) => {
-    const page: Page = JSON.parse(await readableToString(request))
+    const page: Page = parsePage(await readableToString(request))
 
     // Suppress framework warnings during render (they clutter the output)
     const originalWarn = console.warn
@@ -156,7 +159,7 @@ export default (render: AppCallback, options?: Port | ServerOptions): AppCallbac
     }
 
     response.end()
-  }).listen(port, () => log('Inertia SSR server started.'))
+  }).listen({ port, host }, () => log('Inertia SSR server started.'))
 
   log(`Starting SSR server on port ${port}...`)
 

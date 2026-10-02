@@ -5,20 +5,47 @@ const package = process.env.PACKAGE || 'vue3'
 
 const ssr = require('./ssr')
 
-const buildPageData = (req, data) => ({
-  component: req.path
-    .slice(1)
-    .split('/')
-    .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
-    .join('/')
-    .split('-')
-    .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
-    .join(''),
-  props: {},
-  url: req.originalUrl,
-  version: null,
-  ...data,
-})
+const encodeBigInts = (value) => {
+  if (typeof value === 'bigint') {
+    return { $bigint: value.toString() }
+  }
+
+  if (Array.isArray(value)) {
+    return value.map(encodeBigInts)
+  }
+
+  if (value !== null && typeof value === 'object' && value.constructor === Object) {
+    return Object.fromEntries(Object.entries(value).map(([key, nested]) => [key, encodeBigInts(nested)]))
+  }
+
+  return value
+}
+
+const buildPageData = (req, data) => {
+  const page = encodeBigInts({
+    component: req.path
+      .slice(1)
+      .split('/')
+      .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
+      .join('/')
+      .split('-')
+      .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
+      .join(''),
+    props: {},
+    url: req.originalUrl,
+    version: null,
+    ...data,
+  })
+
+  // Stands in for the Laravel opt-in by flagging pages that carry markers. A
+  // route can pass `preserveBigIntegers: false` to act like an app that builds
+  // its own markers.
+  if (page.preserveBigIntegers === undefined && JSON.stringify(page).includes('"$bigint"')) {
+    page.preserveBigIntegers = true
+  }
+
+  return page
+}
 
 const processPartialProps = (req, data) => {
   const partialDataHeader = req.headers['x-inertia-partial-data'] || ''
@@ -52,6 +79,14 @@ const processPartialProps = (req, data) => {
   return data
 }
 
+const applyDefaultNonce = (req, html) => {
+  if (req.query.nonce !== 'default') {
+    return html
+  }
+
+  return html.replace('<script>', '<script nonce="test-default-nonce">')
+}
+
 module.exports = {
   package,
   render: (req, res, data) => {
@@ -78,13 +113,31 @@ module.exports = {
       return res.status(200).json(data)
     }
 
-    return res.status(200).send(
-      fs
-        .readFileSync(path.resolve(__dirname, '../../packages/', package, 'test-app/dist/index.html'))
-        .toString()
-        .replace('{{ headAttribute }}', 'data-inertia')
-        .replace("'{{ placeholder }}'", JSON.stringify(data)),
-    )
+    const html = fs
+      .readFileSync(path.resolve(__dirname, '../../packages/', package, 'test-app/dist/index.html'))
+      .toString()
+      .replace('{{ headAttribute }}', 'data-inertia')
+      .replace("'{{ placeholder }}'", JSON.stringify(data))
+
+    return res.status(200).send(applyDefaultNonce(req, html))
+  },
+  renderWithPlainTitle: (req, res, data) => {
+    data = buildPageData(req, data)
+    data = processPartialProps(req, data)
+
+    if (req.get('X-Inertia')) {
+      res.header('Vary', 'Accept')
+      res.header('X-Inertia', true)
+      return res.status(200).json(data)
+    }
+
+    const html = fs
+      .readFileSync(path.resolve(__dirname, '../../packages/', package, 'test-app/dist/index.html'))
+      .toString()
+      .replace(' {{ headAttribute }}', '')
+      .replace("'{{ placeholder }}'", JSON.stringify(data))
+
+    return res.status(200).send(applyDefaultNonce(req, html))
   },
   renderUnified: (req, res, data) => {
     data = buildPageData(req, data)
@@ -96,15 +149,15 @@ module.exports = {
       return res.status(200).json(data)
     }
 
-    const jsonData = JSON.stringify(data).replace(/\//g, '\\/')
+    const jsonData = JSON.stringify(data).replace(/\//g, '\\/').replace(/</g, '\\u003c')
 
-    return res.status(200).send(
-      fs
-        .readFileSync(path.resolve(__dirname, '../../packages/', package, 'test-app/dist/index-unified.html'))
-        .toString()
-        .replace('{{ headAttribute }}', data.component === 'Head/Dataset' ? 'data-inertia' : 'inertia')
-        .replace('{{ placeholder }}', jsonData),
-    )
+    const html = fs
+      .readFileSync(path.resolve(__dirname, '../../packages/', package, 'test-app/dist/index-unified.html'))
+      .toString()
+      .replace('{{ headAttribute }}', data.component === 'Head/Dataset' ? 'data-inertia' : 'inertia')
+      .replace('{{ placeholder }}', jsonData)
+
+    return res.status(200).send(applyDefaultNonce(req, html))
   },
   renderSSR: async (req, res, data) => {
     data = buildPageData(req, data)
@@ -162,16 +215,24 @@ module.exports = {
       return res.status(200).json(data)
     }
 
-    const jsonData = JSON.stringify(data).replace(/\//g, '\\/')
+    const jsonData = JSON.stringify(data).replace(/\//g, '\\/').replace(/</g, '\\u003c')
 
-    return res.status(200).send(
-      fs
-        .readFileSync(path.resolve(__dirname, '../../packages/', package, 'test-app/dist/index-auto.html'))
-        .toString()
-        .replace('{{ headAttribute }}', data.component === 'Head/Dataset' ? 'data-inertia' : 'inertia')
-        .replace('{{ placeholder }}', jsonData),
-    )
+    const html = fs
+      .readFileSync(path.resolve(__dirname, '../../packages/', package, 'test-app/dist/index-auto.html'))
+      .toString()
+      .replace('{{ headAttribute }}', data.component === 'Head/Dataset' ? 'data-inertia' : 'inertia')
+      .replace('{{ placeholder }}', jsonData)
+
+    return res.status(200).send(applyDefaultNonce(req, html))
   },
-  location: (res, href) => res.status(409).header('X-Inertia-Location', href).send(''),
+  location: (res, href, version) => {
+    res.status(409).header('X-Inertia-Location', href)
+
+    if (version) {
+      res.header('X-Inertia-Version', version)
+    }
+
+    return res.send('')
+  },
   redirect: (res, href) => res.status(409).header('X-Inertia-Redirect', href).send(''),
 }

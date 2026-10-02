@@ -24,8 +24,15 @@
  *   import createServer from '@inertiajs/vue3/server'
  *   import { renderToString } from 'vue/server-renderer'
  *
- *   const render = await ${configureCall}
- *   const renderPage = (page) => render(page, renderToString)
+ *   const renderPromise = ${configureCall}
+ *
+ *   renderPromise.catch((error) => console.error(error))
+ *
+ *   const renderPage = async (page) => {
+ *     const render = await renderPromise
+ *
+ *     return render(page, renderToString)
+ *   }
  *
  *   if (import.meta.env.PROD) {
  *     createServer(renderPage${options})
@@ -99,6 +106,12 @@ export interface SSROptions {
    * Used in production when running the SSR server as a separate process.
    */
   port?: number
+
+  /**
+   * Host to bind the SSR server to.
+   * Used in production when running the SSR server as a separate process.
+   */
+  host?: string
 
   /**
    * Whether to enable cluster mode for the SSR server.

@@ -1,15 +1,16 @@
 <script setup lang="ts">
-import { Link, useLayoutProps, usePage } from '@inertiajs/vue3'
+import { Link, usePage } from '@inertiajs/vue3'
 import { computed } from 'vue'
+
+const { padding = true } = defineProps<{ padding?: boolean }>()
 
 const page = usePage()
 
 const appName = computed(() => page.props.appName)
-const layoutProps = useLayoutProps({ padding: true })
 </script>
 
 <template>
-  <nav class="flex items-center space-x-6 bg-slate-800 px-10 py-6 text-white">
+  <nav class="flex items-center space-x-6 overflow-scroll bg-slate-800 px-10 py-6 text-white">
     <div class="rounded-lg bg-slate-700 px-4 py-1">{{ appName }}</div>
     <Link href="/" class="hover:underline" prefetch>Home</Link>
     <Link href="/users" class="hover:underline" prefetch :cache-for="['2s', '1m']">Users</Link>
@@ -29,10 +30,11 @@ const layoutProps = useLayoutProps({ padding: true })
     <Link href="/once/1" class="hover:underline">Once</Link>
     <Link href="/optimistic" class="hover:underline">Optimistic</Link>
     <Link href="/flash" class="hover:underline">Flash</Link>
+    <Link href="/big-integers" class="hover:underline">Big Integers</Link>
     <Link href="/error/404" class="hover:underline">Errors</Link>
     <Link href="/ssr-debug" class="hover:underline">SSR Debug</Link>
   </nav>
-  <main :class="layoutProps.padding ? 'px-10 py-8' : ''">
+  <main :class="padding ? 'px-10 py-8' : ''">
     <slot />
   </main>
 </template>

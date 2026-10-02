@@ -1,8 +1,10 @@
+/// <reference path="./env.d.ts" />
 import {
   buildSSRBody,
   CreateInertiaAppOptions,
   CreateInertiaAppOptionsForCSR,
   CreateInertiaAppOptionsForSSR,
+  exposeInterceptors,
   getInitialPageFromDOM,
   http as httpModule,
   InertiaAppSSRResponse,
@@ -29,7 +31,10 @@ type SetupOptions<ElementType, SharedProps extends PageProps> = {
   plugin: Plugin
 }
 
-type VueWithApp = (app: VueApp, options: { ssr: boolean }) => void
+type VueWithApp<SharedProps extends PageProps> = (
+  app: VueApp,
+  options: { ssr: boolean; page: Page<SharedProps> },
+) => void
 
 type InertiaAppOptionsForCSR<SharedProps extends PageProps> = CreateInertiaAppOptionsForCSR<
   SharedProps,
@@ -64,7 +69,7 @@ type InertiaAppOptionsAuto<SharedProps extends PageProps> = Omit<
   page?: Page<SharedProps>
   render?: undefined
 } & (
-    | { setup?: undefined; withApp?: VueWithApp }
+    | { setup?: undefined; withApp?: VueWithApp<SharedProps> }
     | { setup: (options: SetupOptions<HTMLElement | null, SharedProps>) => VueApp | void; withApp?: never }
   )
 
@@ -94,9 +99,12 @@ export default async function createInertiaApp<SharedProps extends PageProps = P
     page,
     render,
     defaults = {},
+    nonce,
     http,
     layout,
+    serverHead,
     withApp,
+    dev = !!import.meta.env?.DEV,
   }:
     | InertiaAppOptionsForCSR<SharedProps>
     | InertiaAppOptionsForSSR<SharedProps>
@@ -104,8 +112,16 @@ export default async function createInertiaApp<SharedProps extends PageProps = P
 ): Promise<InertiaAppSSRResponse | RenderFunction<SharedProps> | void> {
   config.replace(defaults)
 
+  if (nonce) {
+    config.set('nonce', nonce)
+  }
+
   if (http) {
     httpModule.setClient(http)
+  }
+
+  if (dev) {
+    exposeInterceptors()
   }
 
   const isServer = typeof window === 'undefined'
@@ -128,6 +144,8 @@ export default async function createInertiaApp<SharedProps extends PageProps = P
         titleCallback: title,
         onHeadUpdate: (elements: string[]) => (head = elements),
         defaultLayout: layout,
+        serverHead,
+        serverRendered: true,
       }
 
       let vueApp: VueApp
@@ -144,7 +162,7 @@ export default async function createInertiaApp<SharedProps extends PageProps = P
         vueApp.use(plugin)
 
         if (withApp) {
-          withApp(vueApp, { ssr: true })
+          withApp(vueApp, { ssr: true, page })
         }
       }
 
@@ -163,6 +181,8 @@ export default async function createInertiaApp<SharedProps extends PageProps = P
     resolveComponent(initialPage.component, initialPage),
     router.decryptHistory().catch(() => {}),
   ]).then(([initialComponent]) => {
+    const el = isServer ? null : document.getElementById(id)!
+
     const props: InertiaAppProps<SharedProps> = {
       initialPage,
       initialComponent,
@@ -170,6 +190,8 @@ export default async function createInertiaApp<SharedProps extends PageProps = P
       titleCallback: title,
       onHeadUpdate: isServer ? (elements: string[]) => (head = elements) : undefined,
       defaultLayout: layout,
+      serverHead,
+      serverRendered: isServer || el!.hasAttribute('data-server-rendered'),
     }
 
     if (isServer) {
@@ -181,11 +203,12 @@ export default async function createInertiaApp<SharedProps extends PageProps = P
       })
     }
 
-    const el = document.getElementById(id)!
+    const target = el!
+    const isServerRendered = props.serverRendered!
 
     if (setup) {
       return (setup as (options: SetupOptions<HTMLElement, SharedProps>) => void)({
-        el,
+        el: target,
         App,
         props,
         plugin,
@@ -193,24 +216,24 @@ export default async function createInertiaApp<SharedProps extends PageProps = P
     }
 
     // Default mounting when setup is not provided
-    if (el.hasAttribute('data-server-rendered')) {
+    if (isServerRendered) {
       const app = createSSRApp({ render: () => h(App, props) })
       app.use(plugin)
 
       if (withApp) {
-        withApp(app, { ssr: false })
+        withApp(app, { ssr: false, page: initialPage })
       }
 
-      app.mount(el)
+      app.mount(target)
     } else {
       const app = createApp({ render: () => h(App, props) })
       app.use(plugin)
 
       if (withApp) {
-        withApp(app, { ssr: false })
+        withApp(app, { ssr: false, page: initialPage })
       }
 
-      app.mount(el)
+      app.mount(target)
     }
   })
 

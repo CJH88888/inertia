@@ -3,11 +3,14 @@ import {
   HeadManagerOnUpdateCallback,
   HeadManagerTitleCallback,
   isPropsObject,
+  isPropsObjectOrCallback,
   normalizeLayouts,
   Page,
   PageHandler,
   PageProps,
+  resolveServerHead,
   router,
+  type ServerHeadOption,
 } from '@inertiajs/core'
 import {
   createElement,
@@ -16,6 +19,7 @@ import {
   ReactNode,
   useEffect,
   useMemo,
+  useRef,
   useState,
   useSyncExternalStore,
 } from 'react'
@@ -26,20 +30,7 @@ import PageContext from './PageContext'
 import { LayoutFunction, ReactComponent, ReactPageHandlerArgs } from './types'
 
 function isComponent(value: unknown): value is ReactComponent {
-  if (!value) {
-    return false
-  }
-
-  if (typeof value === 'object' && '$$typeof' in value) {
-    return true
-  }
-
-  if (typeof value === 'function') {
-    const fn = value as Function & { displayName?: string; prototype?: { isReactComponent?: boolean } }
-    return fn.prototype?.isReactComponent === true || fn.name !== '' || fn.displayName !== undefined
-  }
-
-  return false
+  return typeof value === 'function' || (typeof value === 'object' && value !== null && '$$typeof' in value)
 }
 
 function isRenderFunction(value: unknown): boolean {
@@ -51,13 +42,24 @@ function isRenderFunction(value: unknown): boolean {
   return fn.length === 1 && typeof fn.prototype === 'undefined'
 }
 
-let currentIsInitialPage = true
+function isLayoutResolver(value: unknown): boolean {
+  return (
+    typeof value === 'function' &&
+    (value as Function).length <= 1 &&
+    typeof (value as Function).prototype === 'undefined'
+  )
+}
+
+let pendingInitialSwap: ReactPageHandlerArgs | null = null
 let routerIsInitialized = false
-let swapComponent: PageHandler<ReactComponent> = async () => {
+let swapComponent: PageHandler<ReactComponent> = async (args) => {
   // Dummy function so we can init the router outside of the useEffect hook. This is
   // needed so `router.reload()` works right away (on mount) in any of the user's
   // components. We swap in the real function in the useEffect hook below.
-  currentIsInitialPage = false
+  // The router can swap before that (e.g. a back_forward visit that restores a page
+  // from history), so we remember it here and replay it once the real function is in
+  // place instead of dropping the swap.
+  pendingInitialSwap = args
 }
 
 type CurrentPage = {
@@ -74,6 +76,7 @@ export interface InertiaAppProps<SharedProps extends PageProps = PageProps> {
   titleCallback?: HeadManagerTitleCallback
   onHeadUpdate?: HeadManagerOnUpdateCallback
   defaultLayout?: (name: string, page: Page) => unknown
+  serverHead?: ServerHeadOption
 }
 
 export type InertiaApp = FunctionComponent<InertiaAppProps>
@@ -91,6 +94,7 @@ export default function App<SharedProps extends PageProps = PageProps>({
   titleCallback,
   onHeadUpdate,
   defaultLayout,
+  serverHead,
 }: InertiaAppProps<SharedProps>) {
   const [current, setCurrent] = useState<CurrentPage>({
     component: initialComponent || null,
@@ -98,11 +102,15 @@ export default function App<SharedProps extends PageProps = PageProps>({
     key: null,
   })
 
+  const pageRef = useRef(current.page)
+  pageRef.current = current.page
+
   const headManager = useMemo(() => {
     return createHeadManager(
       typeof window === 'undefined',
-      titleCallback || ((title) => title),
+      (title: string) => (titleCallback ? titleCallback(title, pageRef.current) : title),
       onHeadUpdate || (() => {}),
+      resolveServerHead(initialPage, serverHead),
     )
   }, [])
 
@@ -125,11 +133,10 @@ export default function App<SharedProps extends PageProps = PageProps>({
   }
 
   useEffect(() => {
-    swapComponent = async ({ component, page, preserveState }: ReactPageHandlerArgs) => {
-      if (currentIsInitialPage) {
+    swapComponent = async ({ component, page, preserveState, initialRender }: ReactPageHandlerArgs) => {
+      if (initialRender) {
         // We block setting the current page on the initial page to
         // prevent the initial page from being re-rendered again.
-        currentIsInitialPage = false
         return
       }
 
@@ -146,7 +153,24 @@ export default function App<SharedProps extends PageProps = PageProps>({
       )
     }
 
-    router.on('navigate', () => headManager.forceUpdate())
+    // Replay the swap the dummy function above captured before we got here, if any.
+    if (pendingInitialSwap) {
+      const pending = pendingInitialSwap
+      pendingInitialSwap = null
+      swapComponent(pending)
+    }
+
+    const syncServerHead = (event: { detail: { page: Page } }) => {
+      headManager.updateServerHead(resolveServerHead(event.detail.page, serverHead))
+    }
+
+    const removeNavigateListener = router.on('navigate', syncServerHead)
+    const removeClientVisitListener = router.on('clientVisit', syncServerHead)
+
+    return () => {
+      removeNavigateListener()
+      removeClientVisitListener()
+    }
   }, [])
 
   if (!current.component) {
@@ -166,18 +190,14 @@ export default function App<SharedProps extends PageProps = PageProps>({
       let callbackProps: Record<string, unknown> | null = null
       const layoutValue = Component.layout
 
-      if (
-        typeof layoutValue === 'function' &&
-        (layoutValue as Function).length <= 1 &&
-        typeof (layoutValue as Function).prototype === 'undefined'
-      ) {
+      if (isLayoutResolver(layoutValue)) {
         const result = (layoutValue as Function)(props)
 
         if (isValidElement(result)) {
           return (layoutValue as LayoutFunction)(child)
         }
 
-        if (isPropsObject(result, isComponent)) {
+        if (isPropsObjectOrCallback(result, isComponent)) {
           effectiveLayout = defaultLayout?.(current.page.component, current.page)
           callbackProps = result as Record<string, unknown>
         } else {

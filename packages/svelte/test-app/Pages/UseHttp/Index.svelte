@@ -46,12 +46,19 @@
   const slowRequest = useHttp<Record<string, never>, { result: string }>({})
 
   const errorHttp = useHttp<Record<string, never>, never>({})
+  const httpExceptionHttp = useHttp<Record<string, never>, never>({})
+  const networkErrorHttp = useHttp<Record<string, never>, never>({})
 
   let lastGetResponse: SearchResponse | null = $state(null)
   let lastPostResponse: UserResponse | null = $state(null)
   let lastDeleteResponse: DeleteResponse | null = $state(null)
   let cancelledMessage = $state('')
   let errorMessage = $state('')
+  let httpExceptionStatus: number | null = $state(null)
+  let httpExceptionBody = $state('')
+  let networkErrorMessage = $state('')
+  let validationOnErrorMessage = $state('')
+  let validationExceptionMessage = $state('')
 
   const performSearch = async () => {
     try {
@@ -72,10 +79,17 @@
   }
 
   const performValidation = async () => {
+    validationOnErrorMessage = ''
+    validationExceptionMessage = ''
+
     try {
-      await validateUser.post('/api/validate')
-    } catch {
-      // Errors are stored in validateUser.errors
+      await validateUser.post('/api/validate', {
+        onError: () => {
+          validationOnErrorMessage = 'onError called'
+        },
+      })
+    } catch (error: unknown) {
+      validationExceptionMessage = error instanceof Error ? error.message : 'Unknown validation exception'
     }
   }
 
@@ -114,6 +128,34 @@
           errorMessage = 'Server returned 500 error'
         }
       }
+    }
+  }
+
+  const triggerHttpException = async () => {
+    httpExceptionStatus = null
+    httpExceptionBody = ''
+    try {
+      await httpExceptionHttp.post('/api/error', {
+        onHttpException: (response) => {
+          httpExceptionStatus = response.status
+          httpExceptionBody = response.data
+        },
+      })
+    } catch {
+      // Expected
+    }
+  }
+
+  const triggerNetworkError = async () => {
+    networkErrorMessage = ''
+    try {
+      await networkErrorHttp.get('/api/network-error-test', {
+        onNetworkError: (error) => {
+          networkErrorMessage = error.message || 'Network error occurred'
+        },
+      })
+    } catch {
+      // Expected
     }
   }
 </script>
@@ -202,6 +244,12 @@
     {#if validateUser.hasErrors}
       <div id="validate-has-errors">Form has errors</div>
     {/if}
+    {#if validationOnErrorMessage}
+      <div id="validate-on-error">{validationOnErrorMessage}</div>
+    {/if}
+    {#if validationExceptionMessage}
+      <div id="validate-exception">{validationExceptionMessage}</div>
+    {/if}
     <button onclick={() => validateUser.clearErrors()} id="clear-errors-button">Clear Errors</button>
     <button onclick={() => validateUser.clearErrors('name')} id="clear-name-error-button">Clear Name Error</button>
     <button onclick={() => validateUser.setError('name', 'Manual name error')} id="set-name-error-button"
@@ -245,6 +293,27 @@
     <button onclick={triggerServerError} id="error-button">Trigger Server Error</button>
     {#if errorMessage}
       <div id="error-message">{errorMessage}</div>
+    {/if}
+  </section>
+
+  <!-- HTTP Exception Callback Test -->
+  <section id="http-exception-test">
+    <h2>HTTP Exception Callback</h2>
+    <button onclick={triggerHttpException} id="http-exception-button">Trigger HTTP Exception</button>
+    {#if httpExceptionStatus}
+      <div id="http-exception-status">Status: {httpExceptionStatus}</div>
+    {/if}
+    {#if httpExceptionBody}
+      <div id="http-exception-body">Body: {httpExceptionBody}</div>
+    {/if}
+  </section>
+
+  <!-- Network Error Callback Test -->
+  <section id="network-error-test">
+    <h2>Network Error Callback</h2>
+    <button onclick={triggerNetworkError} id="network-error-button">Trigger Network Error</button>
+    {#if networkErrorMessage}
+      <div id="network-error-message">{networkErrorMessage}</div>
     {/if}
   </section>
 

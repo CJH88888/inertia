@@ -1,19 +1,7 @@
-import { isSameUrlWithoutQueryOrHash, router } from '@inertiajs/core'
+import { isSameUrlWithoutQueryOrHash, partialReloadRequestsSomeProps, router } from '@inertiajs/core'
 import { get } from 'es-toolkit/compat'
-import { defineComponent, onMounted, onUnmounted, ref, type SlotsType } from 'vue'
+import { computed, defineComponent, Fragment, h, onMounted, onUnmounted, ref, type SlotsType } from 'vue'
 import { usePage } from './app'
-
-const keysAreBeingReloaded = (only: string[], except: string[], keys: string[]): boolean => {
-  if (only.length === 0 && except.length === 0) {
-    return true
-  }
-
-  if (only.length > 0) {
-    return keys.some((key) => only.includes(key))
-  }
-
-  return keys.some((key) => !except.includes(key))
-}
 
 export default defineComponent({
   name: 'Deferred',
@@ -26,25 +14,26 @@ export default defineComponent({
   slots: Object as SlotsType<{
     default: { reloading: boolean }
     fallback: {}
+    rescue: { reloading: boolean }
   }>,
   setup(props, { slots }) {
     const reloading = ref(false)
     const activeReloads = new Set<object>()
     const page = usePage()
+    const keys = computed(() => (Array.isArray(props.data) ? props.data : [props.data]) as string[])
+    const rescuedKeys = computed(() => new Set(page.rescuedProps))
 
     let removeStartListener: (() => void) | null = null
     let removeFinishListener: (() => void) | null = null
 
     onMounted(() => {
-      const keys = (Array.isArray(props.data) ? props.data : [props.data]) as string[]
-
       removeStartListener = router.on('start', (e) => {
         const visit = e.detail.visit
 
         if (
           visit.preserveState === true &&
           isSameUrlWithoutQueryOrHash(visit.url, window.location) &&
-          keysAreBeingReloaded(visit.only, visit.except, keys)
+          partialReloadRequestsSomeProps(visit, keys.value)
         ) {
           activeReloads.add(visit)
           reloading.value = true
@@ -68,15 +57,23 @@ export default defineComponent({
     })
 
     return () => {
-      const keys = (Array.isArray(props.data) ? props.data : [props.data]) as string[]
-
       if (!slots.fallback) {
         throw new Error('`<Deferred>` requires a `<template #fallback>` slot')
       }
 
-      return keys.every((key) => get(page.props, key) !== undefined)
-        ? slots.default?.({ reloading: reloading.value })
-        : slots.fallback({})
+      const propsAreDefined = keys.value.every((key) => get(page.props, key) !== undefined)
+      const hasRescuedProps = keys.value.some((key) => rescuedKeys.value.has(key))
+      const slotProps = { reloading: reloading.value }
+
+      if (propsAreDefined && !hasRescuedProps) {
+        return h(Fragment, { key: 'default' }, slots.default?.(slotProps) ?? [])
+      }
+
+      if (hasRescuedProps && slots.rescue) {
+        return h(Fragment, { key: 'rescue' }, slots.rescue(slotProps))
+      }
+
+      return h(Fragment, { key: 'fallback' }, slots.fallback({}))
     }
   },
 })

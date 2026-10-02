@@ -1,9 +1,10 @@
+import { resolve } from 'path'
 import inertia from '@inertiajs/vite'
 import { svelte } from '@sveltejs/vite-plugin-svelte'
-import { resolve } from 'path'
 import { defineConfig } from 'vite'
 
 const isSSR = process.argv.includes('--ssr')
+const asyncEnabled = process.env.SVELTE_ASYNC === 'true'
 
 export default defineConfig({
   build: {
@@ -22,5 +23,19 @@ export default defineConfig({
       '@': __dirname,
     },
   },
-  plugins: [inertia(), svelte()],
+  plugins: [
+    inertia(),
+    svelte({
+      compilerOptions: {
+        experimental: {
+          async: asyncEnabled,
+        },
+      },
+      dynamicCompileOptions({ filename }) {
+        if (filename.includes('/Pages/SSR/Async.svelte')) {
+          return { experimental: { async: true } }
+        }
+      },
+    }),
+  ],
 })

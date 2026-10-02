@@ -1,6 +1,7 @@
 /* NProgress, (c) 2013, 2014 Rico Sta. Cruz - http://ricostacruz.com/nprogress
  * @license MIT */
 
+import { config } from './config'
 import { ProgressSettings } from './types'
 
 const baseComponentSelector = 'nprogress'
@@ -15,17 +16,17 @@ const settings: ProgressSettings = {
   trickle: true,
   trickleSpeed: 200,
   showSpinner: true,
-  barSelector: '[role="bar"]',
-  spinnerSelector: '[role="spinner"]',
+  barSelector: '.bar, [role="bar"]',
+  spinnerSelector: '.spinner, [role="spinner"]',
   parent: 'body',
   color: '#29d',
   includeCSS: true,
   popover: null,
   template: [
-    '<div class="bar" role="bar">',
+    '<div class="bar">',
     '<div class="peg"></div>',
     '</div>',
-    '<div class="spinner" role="spinner">',
+    '<div class="spinner">',
     '<div class="spinner-icon"></div>',
     '</div>',
   ].join(''),
@@ -45,6 +46,7 @@ const configure = (options: Partial<ProgressSettings>) => {
 
   progress = document.createElement('div')
   progress.id = baseComponentSelector
+  progress.setAttribute('aria-hidden', 'true')
   progress.innerHTML = settings.template
 
   if (usePopover) {
@@ -285,6 +287,11 @@ const queue = (() => {
 
 const injectCSS = (color: string): void => {
   const element = document.createElement('style')
+  const nonce = config.get('nonce')
+
+  if (nonce) {
+    element.nonce = nonce
+  }
 
   element.textContent = `
     #${baseComponentSelector} {

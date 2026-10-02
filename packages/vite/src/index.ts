@@ -17,8 +17,9 @@
  */
 
 import { existsSync } from 'node:fs'
-import { resolve } from 'node:path'
-import type { Plugin } from 'vite'
+import { dirname, resolve } from 'node:path'
+import { glob } from 'tinyglobby'
+import type { Plugin, ViteDevServer } from 'vite'
 import { defaultFrameworks } from './frameworks/index'
 import { transformPageResolution } from './pagesTransform'
 import { handleSSRRequest, InertiaSSROptions, resolveSSREntry, SSR_ENDPOINT, SSR_ENTRY_CANDIDATES } from './ssr'
@@ -53,8 +54,14 @@ export interface InertiaPluginOptions {
    *     extractDefault: true,
    *     ssr: (configureCall, options) => `
    *       import createServer from '@inertiajs/solid/server'
-   *       const render = await ${configureCall}
-   *       createServer((page) => render(page)${options})
+   *       const renderPromise = ${configureCall}
+   *       renderPromise.catch((error) => console.error(error))
+   *       const renderPage = async (page) => {
+   *         const render = await renderPromise
+   *
+   *         return render(page)
+   *       }
+   *       createServer(renderPage${options})
    *     `,
    *   }
    * })
@@ -76,12 +83,26 @@ function toFrameworkRecord(input?: FrameworkConfig | FrameworkConfig[]): Record<
   return Object.fromEntries(configs.map((config) => [config.package, config]))
 }
 
+/**
+ * Warm up page component files so Vite discovers their dependencies upfront.
+ *
+ * The pages shorthand (or default) is transformed into import.meta.glob during the transform
+ * hook, which is too late for Vite's initial dependency scanner. Without warmup, first
+ * navigation to a lazy-loaded page can trigger a disruptive re-optimization.
+ */
+async function warmupPageFiles(server: ViteDevServer, sourceFile: string, pageGlobs: string[]): Promise<void> {
+  const files = await glob(pageGlobs, { cwd: dirname(sourceFile), absolute: true })
+
+  files.forEach((file) => server.warmupRequest(file))
+}
+
 export default function inertia(options: InertiaPluginOptions = {}): Plugin {
   const ssrDisabled = options.ssr === false
   const ssr = typeof options.ssr === 'string' ? { entry: options.ssr } : options.ssr || {}
   const frameworks = { ...defaultFrameworks, ...toFrameworkRecord(options.frameworks) }
 
   let entry: string | null = null
+  let devServer: ViteDevServer | null = null
 
   return {
     name: '@inertiajs/vite',
@@ -129,28 +150,65 @@ export default function inertia(options: InertiaPluginOptions = {}): Plugin {
         result =
           wrapWithServerBootstrap(
             result,
-            { port: ssr.port, cluster: ssr.cluster, formatErrors: ssr.formatErrors },
+            { port: ssr.port, host: ssr.host, cluster: ssr.cluster, formatErrors: ssr.formatErrors },
             frameworks,
           ) ?? result
       }
 
-      return transformPageResolution(result, frameworks) ?? (result !== code ? result : null)
+      const pageTransform = transformPageResolution(result, frameworks)
+
+      if (pageTransform) {
+        if (devServer && pageTransform.pageGlobs.length > 0) {
+          warmupPageFiles(devServer, id, pageTransform.pageGlobs).catch(() => {})
+        }
+
+        return pageTransform.code
+      }
+
+      return result !== code ? result : null
     },
 
     configureServer(server) {
+      devServer = server
+      server.httpServer?.on('connection', (socket) => socket.setNoDelay(true))
+
       if (!entry) {
         return
       }
+
+      let warmingUp = false
 
       server.middlewares.use(SSR_ENDPOINT, async (req, res, next) => {
         if (req.method !== 'POST') {
           return next()
         }
 
+        if (warmingUp) {
+          server.config.logger.info('SSR skipped, module graph is still warming up...')
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify(null))
+          return
+        }
+
         await handleSSRRequest(server, entry!, req, res, ssr.formatErrors ?? true)
       })
 
       server.config.logger.info(`Inertia SSR dev endpoint: ${SSR_ENDPOINT}`)
+
+      server.httpServer?.once('listening', () => {
+        warmingUp = true
+        server.config.logger.info('Warming up Inertia SSR module graph...')
+
+        server
+          .ssrLoadModule(entry!)
+          .then(() => server.config.logger.info('Inertia SSR module graph warmed up'))
+          .catch((error) =>
+            server.config.logger.warn(`Failed to warm up Inertia SSR module graph: ${error?.message ?? error}`),
+          )
+          .finally(() => {
+            warmingUp = false
+          })
+      })
     },
   }
 }

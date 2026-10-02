@@ -5,24 +5,19 @@
     "build:ssr": "vite build --ssr ssr.ts --outDir dist",
     "build:ssr-auto": "vite build --config vite.config.ssr-auto.ts --ssr ssr-auto.ts --outDir dist",
     "dev": "nodemon --watch . --watch ../../core/dist --watch ../../svelte/dist --ext js,ts,svelte,html,json --ignore dist/ --exec 'vite build .'",
-    "lint": "eslint .",
+    "lint": "oxlint .",
     "type-check": "svelte-check --tsconfig ./tsconfig.json"
   },
   "devDependencies": {
-    "@eslint/js": "^9.39.3",
-    "@sveltejs/eslint-config": "^8.3.5",
-    "@sveltejs/vite-plugin-svelte": "^6.2.4",
+    "@sveltejs/vite-plugin-svelte": "^7.0.0",
     "@tsconfig/svelte": "^5.0.8",
     "@types/node": "^24.10.13",
-    "eslint": "^9.39.3",
-    "eslint-plugin-svelte": "^3.15.0",
-    "globals": "^17.3.0",
+    "eslint-plugin-svelte": "^3.17.1",
     "nodemon": "^3.1.14",
-    "svelte": "^5.53.5",
-    "svelte-check": "^4.4.3",
-    "typescript": "^5.9.3",
-    "typescript-eslint": "^8.56.1",
-    "vite": "^7.3.1"
+    "svelte": "^5.56.4",
+    "svelte-check": "^4.4.8",
+    "typescript": "^6.0.3",
+    "vite": "^8.0.16"
   },
   "dependencies": {
     "@inertiajs/core": "workspace:*",

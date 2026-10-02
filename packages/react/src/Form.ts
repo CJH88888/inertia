@@ -68,9 +68,13 @@ const Form = forwardRef<FormComponentRef, FormProps>(
       onCancel = noop,
       onSuccess = noop,
       onError = noop,
+      onHttpException = noop,
+      onNetworkError = noop,
+      onFlash = noop,
       onCancelToken = noop,
       onSubmitComplete = noop,
       disableWhileProcessing = false,
+      cancelOnUnmount = false,
       resetOnError = false,
       resetOnSuccess = false,
       setDefaultsOnSuccess = false,
@@ -128,7 +132,11 @@ const Form = forwardRef<FormComponentRef, FormProps>(
     const [isDirty, setIsDirty] = useState(false)
     const defaultData = useRef<FormData>(new FormData())
 
-    const getFormData = (submitter?: FormSubmitter): FormData => new FormData(formElement.current, submitter)
+    const cancelOnUnmountRef = useRef(cancelOnUnmount)
+    cancelOnUnmountRef.current = cancelOnUnmount
+
+    const getFormData = (submitter?: FormSubmitter): FormData =>
+      formElement.current ? new FormData(formElement.current, submitter) : new FormData()
 
     // Convert the FormData to an object because we can't compare two FormData
     // instances directly (which is needed for isDirty), mergeDataIntoQueryString()
@@ -173,6 +181,10 @@ const Form = forwardRef<FormComponentRef, FormProps>(
 
       return () => {
         formEvents.forEach((e) => formElement.current?.removeEventListener(e, updateDirtyState))
+
+        if (cancelOnUnmountRef.current) {
+          form.cancel()
+        }
       }
     }, [])
 
@@ -236,8 +248,11 @@ const Form = forwardRef<FormComponentRef, FormProps>(
         onProgress,
         onFinish,
         onCancel,
-        onSuccess: (...args) => {
-          onSuccess(...args)
+        onHttpException,
+        onNetworkError,
+        onFlash,
+        onSuccess: async (...args) => {
+          const result = await onSuccess(...args)
           onSubmitComplete({
             reset,
             defaults,
@@ -247,6 +262,8 @@ const Form = forwardRef<FormComponentRef, FormProps>(
           if (setDefaultsOnSuccess === true) {
             defaults()
           }
+
+          return result
         },
         onError(...args) {
           onError(...args)
@@ -281,6 +298,7 @@ const Form = forwardRef<FormComponentRef, FormProps>(
       setError: form.setError,
       reset,
       submit,
+      cancel: form.cancel,
       defaults,
       getData,
       getFormData,

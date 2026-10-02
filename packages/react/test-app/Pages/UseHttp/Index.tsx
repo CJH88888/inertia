@@ -47,12 +47,19 @@ export default () => {
   const slowRequest = useHttp<Record<string, never>, { result: string }>({})
 
   const errorHttp = useHttp<Record<string, never>, never>({})
+  const httpExceptionHttp = useHttp<Record<string, never>, never>({})
+  const networkErrorHttp = useHttp<Record<string, never>, never>({})
 
   const [lastGetResponse, setLastGetResponse] = useState<SearchResponse | null>(null)
   const [lastPostResponse, setLastPostResponse] = useState<UserResponse | null>(null)
   const [lastDeleteResponse, setLastDeleteResponse] = useState<DeleteResponse | null>(null)
   const [cancelledMessage, setCancelledMessage] = useState('')
   const [errorMessage, setErrorMessage] = useState('')
+  const [httpExceptionStatus, setHttpExceptionStatus] = useState<number | null>(null)
+  const [httpExceptionBody, setHttpExceptionBody] = useState('')
+  const [networkErrorMessage, setNetworkErrorMessage] = useState('')
+  const [validationOnErrorMessage, setValidationOnErrorMessage] = useState('')
+  const [validationExceptionMessage, setValidationExceptionMessage] = useState('')
 
   const performSearch = async () => {
     try {
@@ -73,10 +80,17 @@ export default () => {
   }
 
   const performValidation = async () => {
+    setValidationOnErrorMessage('')
+    setValidationExceptionMessage('')
+
     try {
-      await validateUser.post('/api/validate')
-    } catch {
-      // Errors are stored in validateUser.errors
+      await validateUser.post('/api/validate', {
+        onError: () => {
+          setValidationOnErrorMessage('onError called')
+        },
+      })
+    } catch (error: unknown) {
+      setValidationExceptionMessage(error instanceof Error ? error.message : 'Unknown validation exception')
     }
   }
 
@@ -115,6 +129,34 @@ export default () => {
           setErrorMessage('Server returned 500 error')
         }
       }
+    }
+  }
+
+  const triggerHttpException = async () => {
+    setHttpExceptionStatus(null)
+    setHttpExceptionBody('')
+    try {
+      await httpExceptionHttp.post('/api/error', {
+        onHttpException: (response) => {
+          setHttpExceptionStatus(response.status)
+          setHttpExceptionBody(response.data)
+        },
+      })
+    } catch {
+      // Expected
+    }
+  }
+
+  const triggerNetworkError = async () => {
+    setNetworkErrorMessage('')
+    try {
+      await networkErrorHttp.get('/api/network-error-test', {
+        onNetworkError: (error) => {
+          setNetworkErrorMessage(error.message || 'Network error occurred')
+        },
+      })
+    } catch {
+      // Expected
     }
   }
 
@@ -216,6 +258,8 @@ export default () => {
           Validate
         </button>
         {validateUser.hasErrors && <div id="validate-has-errors">Form has errors</div>}
+        {validationOnErrorMessage && <div id="validate-on-error">{validationOnErrorMessage}</div>}
+        {validationExceptionMessage && <div id="validate-exception">{validationExceptionMessage}</div>}
         <button onClick={() => validateUser.clearErrors()} id="clear-errors-button">
           Clear Errors
         </button>
@@ -271,6 +315,25 @@ export default () => {
           Trigger Server Error
         </button>
         {errorMessage && <div id="error-message">{errorMessage}</div>}
+      </section>
+
+      {/* HTTP Exception Callback Test */}
+      <section id="http-exception-test">
+        <h2>HTTP Exception Callback</h2>
+        <button onClick={triggerHttpException} id="http-exception-button">
+          Trigger HTTP Exception
+        </button>
+        {httpExceptionStatus && <div id="http-exception-status">Status: {httpExceptionStatus}</div>}
+        {httpExceptionBody && <div id="http-exception-body">Body: {httpExceptionBody}</div>}
+      </section>
+
+      {/* Network Error Callback Test */}
+      <section id="network-error-test">
+        <h2>Network Error Callback</h2>
+        <button onClick={triggerNetworkError} id="network-error-button">
+          Trigger Network Error
+        </button>
+        {networkErrorMessage && <div id="network-error-message">{networkErrorMessage}</div>}
       </section>
 
       {/* Reset Test */}
